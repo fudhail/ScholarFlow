@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { AppMode, AgentState, AgentLog, Project, ProjectAsset, OutlineSection, ViewState, LibraryPage } from '../types';
-import { Activity, X, PanelLeftClose, PanelRightClose, Terminal, Cpu, Zap, Send, Loader2, FileImage, Table, Wand2, Database, Check, RefreshCw, ChevronDown, ChevronRight, MessageSquare, Sparkles, Eraser, PlayCircle, PenTool, BookOpen, Library, Quote, PlusCircle } from 'lucide-react';
+import { Activity, X, PanelLeftClose, PanelRightClose, Terminal, Cpu, Zap, Loader2, FileImage, Table, Wand2, Database, Check, RefreshCw, ChevronDown, ChevronRight, MessageSquare, Sparkles, Eraser, PlayCircle, PenTool, BookOpen, Library, Quote, PlusCircle, Upload } from 'lucide-react';
 import { AgentAvatar } from './AgentAvatar';
 // import { MOCK_PAPERS } from '../constants'; (Removed)
 import Markdown from 'react-markdown';
@@ -24,6 +24,7 @@ interface SidebarRightProps {
     activeFileContent?: string;
     onUpdateSection?: (sectionTitle: string, content: string, mode: 'append' | 'replace') => void;
     onAnalyzeAsset?: (asset: ProjectAsset) => void;
+    onOpenAssetModal?: () => void;
     pendingMessage?: string | null;
     onClearPendingMessage?: () => void;
     selectedContextIds?: Set<string>; // Paper IDs selected for context
@@ -46,6 +47,7 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
     activeFileContent = '',
     onUpdateSection,
     onAnalyzeAsset,
+    onOpenAssetModal,
     pendingMessage,
     onClearPendingMessage,
     selectedContextIds = new Set()
@@ -409,7 +411,7 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
 
             await streamDraft({
                 project_id: activeProject.id,
-                message: `Draft section: ${section.title}. Description: ${section.description}`,
+                message: `Draft section: ${section.title}. Description: ${section.description}. IMPORTANT: Do NOT include a References or Bibliography section. Use only inline citation numbers like [1], [2] in the text where needed.`,
                 selected_paper_ids: section.relevantPaperIds,
                 lab_asset_ids: selectedAssetIds
             }, (accumulatedText) => {
@@ -419,13 +421,16 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
                 onUpdateSection(section.title, accumulatedText, 'replace');
             }, undefined, 25); // 25ms word delay for typing effect
 
-            // Ensure final content is in the paper (safety net)
-            if (finalContent) {
-                onUpdateSection(section.title, finalContent, 'replace');
+            // Strip any inline references block the AI may have added despite instructions
+            const cleanContent = stripInlineReferences(finalContent);
+
+            // Ensure final cleaned content is in the paper (safety net)
+            if (cleanContent) {
+                onUpdateSection(section.title, cleanContent, 'replace');
             }
 
             // Store the final content for manual re-insertion if needed
-            setSectionContent(prev => new Map(prev).set(section.id, finalContent));
+            setSectionContent(prev => new Map(prev).set(section.id, cleanContent));
 
             setOutline(prev => prev.map(s => s.id === section.id ? { ...s, status: 'completed' } : s));
             if (addAgentLog) addAgentLog('Co-Author', `✓ Drafted "${section.title}" and added to paper`, 'success');
@@ -455,11 +460,18 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
         const pendingSections = (sectionsOverride || outline).filter(s => s.status === 'pending');
 
         // Draft all sections in parallel for maximum speed
-        const draftPromises = pendingSections.map(section => 
+        const draftPromises = pendingSections.map(section =>
             executeDraftSection(section, true) // Pass true for parallel mode
         );
 
         await Promise.all(draftPromises);
+
+        // Append consolidated bibliography at the end of the paper
+        const bibContent = buildBibliography(sectionsOverride || outline);
+        if (bibContent && onUpdateSection) {
+            onUpdateSection('References', bibContent, 'replace');
+            if (addAgentLog) addAgentLog('Co-Author', '✓ References section added to end of paper', 'success');
+        }
 
         setIsAutoWriting(false);
         if (addAgentLog) addAgentLog('Co-Author', `✨ All ${pendingSections.length} sections drafted successfully!`, 'success');
@@ -530,6 +542,30 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
         const regex = new RegExp(`## ${escapedTitle}\\n((?:(?!\\n## )[\\s\\S])*)`);
         const match = activeFileContent.match(regex);
         return match ? match[1].trim() : '';
+    };
+
+    // Strip any trailing References/Bibliography block the AI may include despite instructions
+    const stripInlineReferences = (content: string): string => {
+        return content
+            .replace(/\n+#{1,3}\s*(References|Bibliography|Works Cited|Sources)[^\n]*\n[\s\S]*$/i, '')
+            .trim();
+    };
+
+    // Build a consolidated bibliography from all papers used across sections
+    const buildBibliography = (sectionsOverride?: OutlineSection[]): string => {
+        const usedPaperIds = new Set<string>();
+        (sectionsOverride || outline).forEach(s => s.relevantPaperIds.forEach(id => usedPaperIds.add(id)));
+        selectedContextIds.forEach(id => usedPaperIds.add(id));
+
+        const usedPapers = projectPapers.filter(p => usedPaperIds.has(p.id));
+        if (usedPapers.length === 0) return '';
+
+        return usedPapers.map((paper, i) => {
+            const authors = paper.authors?.join(', ') ?? 'Unknown Authors';
+            const year = paper.year ? `, ${paper.year}` : '';
+            const venue = (paper as any).venue ? `. ${(paper as any).venue}` : '';
+            return `[${i + 1}] ${authors}, "${paper.title}"${venue}${year}.`;
+        }).join('\n\n');
     };
 
     const handleCritique = (section: OutlineSection) => {
@@ -658,7 +694,7 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
 
                         {/* A. Top Pane: Context Tool (Collapsible) */}
                         {activeTab && (
-                            <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3 border-b border-gray-800 bg-black/50">
+                            <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3 bg-black/50">
 
                                 {/* PLAN & REVIEW VIEW */}
                                 {activeTab === 'PLAN' && (
@@ -921,6 +957,14 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
                                 {activeTab === 'ASSETS' && (
                                     <div className="space-y-3 pb-4">
                                         <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider px-1">Active Assets ({activeProject?.assets.length})</div>
+                                        {/* Upload button */}
+                                        <button
+                                            onClick={() => onOpenAssetModal && onOpenAssetModal()}
+                                            className="w-full flex items-center justify-center gap-2 py-2 bg-[#15803d] hover:bg-[#166534] text-white rounded-lg text-[10px] font-bold uppercase tracking-wide transition-colors border border-green-600 shadow-lg shadow-green-900/20"
+                                        >
+                                            <Upload className="w-3 h-3" />
+                                            Upload Asset
+                                        </button>
                                         {activeProject?.assets.length === 0 ? (
                                             <div className="text-center py-6 text-gray-600 italic text-xs border border-dashed border-gray-800 rounded">
                                                 No assets found.
@@ -944,42 +988,6 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
                                 )}
                             </div>
                         )}
-
-                        {/* B. Bottom Pane: Chat (Always Visible, Height Adjusts) */}
-                        <div className={`${activeTab ? 'h-[40%] border-t border-gray-800' : 'flex-1'} flex flex-col min-h-0 bg-[#0a0a0a] transition-all duration-300`}>
-                            {/* Chat Messages */}
-                            <div className="flex-1 overflow-y-auto p-3 space-y-3">
-                                {chatMessages.map((m, i) => (
-                                    <div key={i} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
-                                        <div className={`max-w-[95%] rounded-lg px-3 py-2 text-xs leading-relaxed ${m.role === 'user' ? 'bg-indigo-900/50 text-indigo-100 border border-indigo-500/30' : 'bg-gray-800 text-gray-300'}`}>
-                                            {m.role === 'agent' ? <Markdown>{m.text}</Markdown> : m.text}
-                                        </div>
-                                    </div>
-                                ))}
-                                {agentState === AgentState.THINKING && (
-                                    <div className="flex items-center gap-2 text-gray-500 text-xs italic">
-                                        <Loader2 className="w-3 h-3 animate-spin" /> Thinking...
-                                    </div>
-                                )}
-                                <div ref={chatEndRef} />
-                            </div>
-
-                            {/* Chat Input */}
-                            <div className="p-2 border-t border-gray-800 bg-[#18181b] shrink-0">
-                                <div className="relative">
-                                    <input
-                                        value={chatInput}
-                                        onChange={(e) => setChatInput(e.target.value)}
-                                        onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-                                        placeholder={activeTab ? `Discuss ${activeTab.toLowerCase()}...` : "Ask Co-Author..."}
-                                        className="w-full bg-black border border-gray-700 rounded pl-3 pr-8 py-2 text-xs text-gray-300 focus:border-indigo-500 outline-none"
-                                    />
-                                    <button onClick={() => handleSendMessage()} className="absolute right-1.5 top-1.5 text-gray-500 hover:text-white">
-                                        <Send className="w-3 h-3" />
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
 
                     </div>
                 </div>

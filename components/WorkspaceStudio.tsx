@@ -1,36 +1,44 @@
-
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
     Download, RefreshCw, Maximize, Minimize,
-    Printer, Edit3, Check, PlusCircle, Trash2,
+    Printer, Check, PlusCircle, Trash2,
     LayoutTemplate, ChevronDown, ChevronLeft, ChevronRight, Undo2, Redo2,
-    FileText
+    FileText,
 } from 'lucide-react';
 import { Project } from '../types';
-import Editor from '@monaco-editor/react';
 import Markdown from 'react-markdown';
 import { useToastStore } from '../stores/toastStore';
 import { saveDraft, loadDraft } from '../lib/api-client';
+import { useEditor, EditorContent } from '@tiptap/react';
+import StarterKit from '@tiptap/starter-kit';
+import TextAlign from '@tiptap/extension-text-align';
+import Underline from '@tiptap/extension-underline';
+import Placeholder from '@tiptap/extension-placeholder';
+import TurndownService from 'turndown';
+import { marked } from 'marked';
+
+const turndownService = new TurndownService({ headingStyle: 'atx' });
+
 
 // ─── A4 / page geometry ───────────────────────────────────────────────────────
-const A4_W_MM  = 210;
-const A4_H_MM  = 297;
-const GAP_MM   = 10;   // grey gap between pages in the viewer
+const A4_W_MM = 210;
+const A4_H_MM = 297;
+const PAGE_GAP_MM = 12; // Gap between pages (visual separator)
 
 // Springer LNCS exact margins (mm)
-// Running header sits at 15mm from top, content area starts at 49mm
-const SPR_HDR_MM  = 15;   // running header baseline from top
-const SPR_MT_MM   = 49;   // top margin (content starts here)
-const SPR_MB_MM   = 27;   // bottom margin (page number at ~287mm from top)
-const SPR_MS_MM   = 25;   // side margins (left & right)
-const SPR_BODY_H  = A4_H_MM - SPR_MT_MM - SPR_MB_MM; // ≈221mm printable
+const SPR_HDR_MM = 15;
+const SPR_MT_MM = 49;
+const SPR_MB_MM = 27;
+const SPR_MS_MM = 25;
+const SPR_BODY_H = A4_H_MM - SPR_MT_MM - SPR_MB_MM;
 
-// IEEE Conference exact margins (mm)
-const IEEE_HDR_MM = 14;   // header / conference name area
-const IEEE_MT_MM  = 19;   // top margin
-const IEEE_MB_MM  = 43;   // bottom margin (larger for IEEE footer)
-const IEEE_MS_MM  = 13;   // side margins
-const IEEE_BODY_H = A4_H_MM - IEEE_MT_MM - IEEE_MB_MM; // ≈235mm printable
+// IEEE Conference exact margins (mm) for A4
+const IEEE_HDR_MM = 14;
+const IEEE_MT_MM = 19;     // 0.75 in top margin
+const IEEE_MB_MM = 43;     // 1.69 in bottom margin
+const IEEE_MS_MM = 14.32;  // 0.56 in side margins
+const IEEE_BODY_H = A4_H_MM - IEEE_MT_MM - IEEE_MB_MM;
+const IEEE_COL_GAP = 4.22; // 0.17 in spacing between columns
 
 // PX per MM at 96dpi
 const PX_PER_MM = 96 / 25.4;
@@ -45,33 +53,31 @@ interface Block {
 
 interface TemplateConfig {
     name: string;
-    // page geometry
     mt: number; mb: number; ms: number;
     hdrMm: number;
     bodyH: number;
     cols: 1 | 2;
     colGap?: number;
-    // typography
     fontFamily: string;
     fontSize: string;
     lineHeight: string;
-    // title block
     titleSize: string;
     titleWeight: string;
-    // abstract indent
     abstractIndent?: string;
-    // section heading
+    abstractStyle?: 'normal' | 'bold-italic-em'; // IEEE uses bold-italic with em dash
     sectionSize: string;
     sectionWeight: string;
     sectionAlign?: string;
     sectionVariant?: string;
-    // running header style
     hdrStyle?: string;
+    headingNumbering?: 'roman' | 'decimal'; // IEEE=roman, Springer=decimal
+    showPageNumbers?: boolean;  // IEEE says yes for authors, no for publisher
+    noHeaderOnFirst?: boolean;  // Springer: no header on page 1
 }
 
 const TEMPLATES: Record<string, TemplateConfig> = {
     SPRINGER: {
-        name: 'Springer LNCS (A4)',
+        name: 'Springer LNCS',
         mt: SPR_MT_MM, mb: SPR_MB_MM, ms: SPR_MS_MM,
         hdrMm: SPR_HDR_MM, bodyH: SPR_BODY_H,
         cols: 1,
@@ -79,21 +85,29 @@ const TEMPLATES: Record<string, TemplateConfig> = {
         fontSize: '10pt', lineHeight: '1.2',
         titleSize: '14pt', titleWeight: 'bold',
         abstractIndent: '10mm',
-        sectionSize: '11pt', sectionWeight: 'bold', sectionAlign: 'left',
+        abstractStyle: 'normal',
+        sectionSize: '10pt', sectionWeight: 'bold', sectionAlign: 'left',
         hdrStyle: 'italic',
+        headingNumbering: 'decimal',
+        showPageNumbers: true,
+        noHeaderOnFirst: true,
     },
     IEEE: {
-        name: 'IEEE Conference (A4)',
+        name: 'IEEE Conference',
         mt: IEEE_MT_MM, mb: IEEE_MB_MM, ms: IEEE_MS_MM,
         hdrMm: IEEE_HDR_MM, bodyH: IEEE_BODY_H,
-        cols: 2, colGap: 5,
+        cols: 2, colGap: IEEE_COL_GAP,
         fontFamily: "'Times New Roman', Times, serif",
         fontSize: '10pt', lineHeight: '1.15',
-        titleSize: '20pt', titleWeight: 'normal',
+        titleSize: '24pt', titleWeight: 'normal',  // IEEE: 24pt not bold
         abstractIndent: '12mm',
+        abstractStyle: 'bold-italic-em',  // "Abstract—" bold-italic em dash
         sectionSize: '10pt', sectionWeight: 'bold',
         sectionAlign: 'center', sectionVariant: 'small-caps',
         hdrStyle: 'normal',
+        headingNumbering: 'roman',
+        showPageNumbers: false, // IEEE: publisher adds these
+        noHeaderOnFirst: false,
     },
 };
 
@@ -120,19 +134,19 @@ export const WorkspaceStudio: React.FC<WorkspaceStudioProps> = ({
     onOpenPaper,
     isStreaming = false,
 }) => {
-    const [blocks,        setBlocks]        = useState<Block[]>([]);
-    const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
-    const [zoom,          setZoom]          = useState(100);
+    const [blocks, setBlocks] = useState<Block[]>([]);
+    const [zoom, setZoom] = useState(100);
     const [activeTemplate, setActiveTemplate] = useState<string>('SPRINGER');
     const [templateMenuOpen, setTemplateMenuOpen] = useState(false);
     const [isRefactoring, setIsRefactoring] = useState(false);
-    const [currentPage,  setCurrentPage]   = useState(1);
-    const [totalPages,   setTotalPages]    = useState(1);
+    const [currentPage, setCurrentPage] = useState(1);
+    const [totalPages, setTotalPages] = useState(1);
+    // Editable running header / footer state
+    const [runningHeader, setRunningHeader] = useState('');
+    const [pageFooter, setPageFooter] = useState('');
 
     const { addToast } = useToastStore();
-    const viewportRef   = useRef<HTMLDivElement>(null);
-    const canvasRef     = useRef<HTMLDivElement>(null);
-    const measureRef    = useRef<HTMLDivElement>(null); // off-screen measure
+    const viewportRef = useRef<HTMLDivElement>(null);
 
     const isStreamingRef = useRef(isStreaming);
     useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
@@ -141,7 +155,6 @@ export const WorkspaceStudio: React.FC<WorkspaceStudioProps> = ({
 
     // ── Parse markdown → blocks ───────────────────────────────────────────────
     useEffect(() => {
-        if (editingBlockId && !isStreamingRef.current) return;
         if (!content) { setBlocks([]); return; }
 
         const newBlocks: Block[] = [];
@@ -179,38 +192,47 @@ export const WorkspaceStudio: React.FC<WorkspaceStudioProps> = ({
         };
 
         lines.forEach(line => {
-            if      (line.match(/^##\s+Abstract/i))  flush('abstract');
-            else if (line.match(/^##\s+Keywords/i))  flush('keywords');
-            else if (line.match(/^##\s+/))            flush('section', line.replace(/^##\s*/, '').trim());
-            else                                       buffer.push(line);
+            if (line.match(/^##\s+Abstract/i)) flush('abstract');
+            else if (line.match(/^##\s+Keywords/i)) flush('keywords');
+            else if (line.match(/^##\s+/)) flush('section', line.replace(/^##\s*/, '').trim());
+            else buffer.push(line);
         });
         flush();
         setBlocks(newBlocks);
-    }, [content, editingBlockId]);
+    }, [content]);
 
     // ── Reconstruct markdown from blocks ──────────────────────────────────────
     const saveBlocks = useCallback((updated: Block[]) => {
         let md = '';
         updated.forEach(b => {
-            if      (b.type === 'title')    md += `# ${b.content}\n\n`;
-            else if (b.type === 'authors')  md += `**Authors:**\n${b.content}\n\n`;
+            if (b.type === 'title') md += `# ${b.content}\n\n`;
+            else if (b.type === 'authors') md += `**Authors:**\n${b.content}\n\n`;
             else if (b.type === 'abstract') md += `## Abstract\n${b.content}\n\n`;
             else if (b.type === 'keywords') md += `## Keywords\n${b.content}\n\n`;
-            else if (b.type === 'section')  md += `## ${b.heading}\n${b.content}\n\n`;
+            else if (b.type === 'section') md += `## ${b.heading}\n${b.content}\n\n`;
         });
         onChange(md);
         setBlocks(updated);
     }, [onChange]);
 
-    const handleBlockChange   = (id: string, v: string) => saveBlocks(blocks.map(b => b.id === id ? { ...b, content: v } : b));
+    const handleBlockChange = (id: string, v: string) => saveBlocks(blocks.map(b => b.id === id ? { ...b, content: v } : b));
     const handleHeadingChange = (id: string, v: string) => saveBlocks(blocks.map(b => b.id === id ? { ...b, heading: v } : b));
+
     const addNewSection = () => {
         const nb: Block = { id: `blk-${Date.now()}`, type: 'section', heading: 'New Section', content: 'Start writing here...' };
         saveBlocks([...blocks, nb]);
-        setEditingBlockId(nb.id);
     };
+
     const deleteBlock = (id: string) => {
-        if (confirm('Delete this section?')) { saveBlocks(blocks.filter(b => b.id !== id)); setEditingBlockId(null); }
+        if (confirm('Delete this section?')) saveBlocks(blocks.filter(b => b.id !== id));
+    };
+
+    const insertSectionAfter = (afterId: string) => {
+        const idx = blocks.findIndex(b => b.id === afterId);
+        const nb: Block = { id: `blk-${Date.now()}`, type: 'section', heading: 'New Section', content: 'Start writing here...' };
+        const newBlocks = [...blocks];
+        newBlocks.splice(idx + 1, 0, nb);
+        saveBlocks(newBlocks);
     };
 
     // ── Draft persistence ─────────────────────────────────────────────────────
@@ -218,36 +240,41 @@ export const WorkspaceStudio: React.FC<WorkspaceStudioProps> = ({
         if (!activeProject?.id) return;
         loadDraft(activeProject.id).then(draft => {
             if (draft.full_content && draft.full_content !== content) onChange(draft.full_content);
-        }).catch(() => {});
+        }).catch(() => { });
     }, [activeProject?.id]);
 
     useEffect(() => {
         if (!activeProject?.id || !content) return;
         const t = setTimeout(() => {
-            saveDraft(activeProject.id, null, content).catch(() => {});
+            saveDraft(activeProject.id, null, content).catch(() => { });
         }, 3000);
         return () => clearTimeout(t);
     }, [activeProject?.id, content]);
 
-    // ── Measure content → page count ─────────────────────────────────────────
-    // We render a hidden off-screen div with the same width/font as one body
-    // column, measure its height, then divide by bodyH to get page count.
+    // Seed running header from first title/author block
+    useEffect(() => {
+        if (runningHeader) return;
+        const authors = blocks.find(b => b.type === 'authors')?.content ?? '';
+        const authorShort = authors.split('\n')[0]?.split(',')[0]?.trim() ?? '';
+        if (authorShort) setRunningHeader(`${authorShort} et al.`);
+    }, [blocks]);
+
+    // ── Natural content height → page count ──────────────────────────────────
+    const contentRef = useRef<HTMLDivElement>(null);
     useEffect(() => {
         const measure = () => {
-            if (!measureRef.current) return;
-            const h = measureRef.current.getBoundingClientRect().height / PX_PER_MM;
-            // For 2-col (IEEE) the measure div uses 2 cols so reported height is halved already
-            const pages = Math.max(1, Math.ceil(h / tmpl.bodyH));
-            setTotalPages(pages);
+            if (!contentRef.current) return;
+            const h = contentRef.current.getBoundingClientRect().height / PX_PER_MM;
+            setTotalPages(Math.max(1, Math.ceil(h / tmpl.bodyH)));
         };
         const ro = new ResizeObserver(measure);
-        if (measureRef.current) ro.observe(measureRef.current);
+        if (contentRef.current) ro.observe(contentRef.current);
         measure();
         return () => ro.disconnect();
     }, [blocks, activeTemplate]);
 
     // ── Scroll → current page ─────────────────────────────────────────────────
-    const VIEWPORT_PAD = 40; // px, from .paper-viewport padding-top
+    const VIEWPORT_PAD = 40;
     useEffect(() => {
         const updatePage = () => {
             if (!viewportRef.current) return;
@@ -277,17 +304,62 @@ export const WorkspaceStudio: React.FC<WorkspaceStudioProps> = ({
     };
 
     // ── Render ────────────────────────────────────────────────────────────────
+    const pageHeightPx = A4_H_MM * PX_PER_MM;
+    const bodyHeightPx = tmpl.bodyH * PX_PER_MM;
+    const marginTopPx = tmpl.mt * PX_PER_MM;
+    const marginSidePx = tmpl.ms * PX_PER_MM;
+    const marginBotPx = tmpl.mb * PX_PER_MM;
+    const hdrTopPx = tmpl.hdrMm * PX_PER_MM;
+
+    const title = blocks.find(b => b.type === 'title')?.content ?? activeFileName ?? 'Untitled';
+    const authors = blocks.find(b => b.type === 'authors')?.content ?? '';
+    const authorShort = authors.split('\n')[0]?.split(',')[0]?.trim() ?? '';
+    const derivedHdrLeft = authorShort ? `${authorShort} et al.` : '';
+    const derivedHdrRight = title.length > 50 ? title.slice(0, 48) + '…' : title;
+
     return (
         <div className="flex flex-col h-full bg-[#525659] font-sans overflow-hidden">
             <style>{`
-                .editable-hover:hover { background: rgba(238,242,255,0.5); outline: 1px dashed #c7d2fe; }
+                /* ── Tiptap base reset ── */
+                .tiptap-block { outline: none; min-height: 1em; }
+                .tiptap-block:focus { outline: none; }
+                .tiptap-block.ProseMirror-focused { outline: none; }
+                .tiptap-block p { margin-bottom: 4pt; }
+                .tiptap-block p.is-editor-empty:first-child::before {
+                    color: #adb5bd; content: attr(data-placeholder);
+                    float: left; height: 0; pointer-events: none;
+                }
+                /* Tiptap wrapper focus ring (indigo dashed) */
+                .ProseMirror:focus-visible { outline: none; }
+                .tiptap-block:focus-within { outline: 2px dashed rgba(99,102,241,0.5); outline-offset: 2px; border-radius: 2px; }
+
+                /* ── IEEE formatting ── */
+                .ieee-format .tiptap-block { font-family: "Times New Roman", Times, serif; font-size: 10pt; line-height: 1.15; }
+                .ieee-format .tiptap-block h1 { font-size: 10pt; font-weight: bold; text-align: center; font-variant: small-caps; text-transform: uppercase; margin: 10pt 0 4pt; }
+                .ieee-format .tiptap-block h2 { font-size: 10pt; font-weight: normal; font-style: italic; text-align: left; margin: 8pt 0 3pt; }
+                .ieee-format .tiptap-block h3 { font-size: 10pt; font-weight: normal; font-style: italic; text-align: left; margin: 6pt 0 2pt; }
+                .ieee-format .tiptap-block p { text-align: justify; margin-bottom: 0; text-indent: 12pt; }
+                .ieee-format .tiptap-block strong { font-weight: bold; }
+                .ieee-format .tiptap-block em { font-style: italic; }
+
+                /* ── Springer formatting ── */
+                .springer-format .tiptap-block { font-family: "Times New Roman", Times, serif; font-size: 10pt; line-height: 1.2; }
+                .springer-format .tiptap-block h1 { font-size: 10pt; font-weight: bold; text-align: left; margin: 12pt 0 4pt; }
+                .springer-format .tiptap-block h2 { font-size: 10pt; font-weight: bold; font-style: italic; text-align: left; margin: 10pt 0 3pt; }
+                .springer-format .tiptap-block h3 { font-size: 10pt; font-style: italic; text-align: left; margin: 8pt 0 2pt; }
+                .springer-format .tiptap-block p { text-align: justify; margin-bottom: 4pt; }
+                .springer-format .tiptap-block ul, .springer-format .tiptap-block ol { padding-left: 16pt; }
+
+                /* ── Print ── */
                 @media print {
-                    .paper-viewport { padding: 0 !important; background: white !important; }
+                    .no-print { display: none !important; }
+                    .paper-doc { box-shadow: none !important; }
+                    .tiptap-block { outline: none !important; }
                 }
             `}</style>
 
-            {/* ── TOOLBAR ── */}
-            <div className="h-12 bg-white border-b border-gray-200 flex items-center justify-between px-4 shrink-0 z-30 shadow-sm print:hidden">
+            {/* ── MAIN TOOLBAR ── */}
+            <div className="no-print h-12 bg-white border-b border-gray-200 flex items-center justify-between px-4 shrink-0 z-30 shadow-sm">
                 <div className="flex items-center gap-3">
                     <span className="font-bold text-gray-700 flex items-center gap-2">
                         <Printer className="w-4 h-4 text-indigo-600" /> Live Paper
@@ -319,24 +391,16 @@ export const WorkspaceStudio: React.FC<WorkspaceStudioProps> = ({
 
                     {/* Zoom */}
                     <div className="flex items-center gap-0.5 bg-gray-100 rounded px-1">
-                        <button onClick={() => setZoom(z => Math.max(40, z - 10))} className="p-1 hover:bg-white rounded text-gray-500">
-                            <Minimize className="w-3 h-3" />
-                        </button>
+                        <button onClick={() => setZoom(z => Math.max(40, z - 10))} className="p-1 hover:bg-white rounded text-gray-500"><Minimize className="w-3 h-3" /></button>
                         <span className="text-xs w-9 text-center font-medium">{zoom}%</span>
-                        <button onClick={() => setZoom(z => Math.min(160, z + 10))} className="p-1 hover:bg-white rounded text-gray-500">
-                            <Maximize className="w-3 h-3" />
-                        </button>
+                        <button onClick={() => setZoom(z => Math.min(160, z + 10))} className="p-1 hover:bg-white rounded text-gray-500"><Maximize className="w-3 h-3" /></button>
                     </div>
                 </div>
 
                 <div className="flex items-center gap-2">
                     <div className="flex items-center gap-0.5 border-r border-gray-200 pr-2 mr-1">
-                        <button onClick={onUndo} disabled={!canUndo} className="p-1.5 text-gray-400 hover:text-gray-800 hover:bg-gray-100 rounded disabled:opacity-30" title="Undo">
-                            <Undo2 className="w-4 h-4" />
-                        </button>
-                        <button onClick={onRedo} disabled={!canRedo} className="p-1.5 text-gray-400 hover:text-gray-800 hover:bg-gray-100 rounded disabled:opacity-30" title="Redo">
-                            <Redo2 className="w-4 h-4" />
-                        </button>
+                        <button onClick={onUndo} disabled={!canUndo} className="p-1.5 text-gray-400 hover:text-gray-800 hover:bg-gray-100 rounded disabled:opacity-30" title="Undo"><Undo2 className="w-4 h-4" /></button>
+                        <button onClick={onRedo} disabled={!canRedo} className="p-1.5 text-gray-400 hover:text-gray-800 hover:bg-gray-100 rounded disabled:opacity-30" title="Redo"><Redo2 className="w-4 h-4" /></button>
                     </div>
                     <button onClick={addNewSection} className="flex items-center gap-1 px-3 py-1.5 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded text-xs font-bold">
                         <PlusCircle className="w-3.5 h-3.5" /> Add Section
@@ -347,11 +411,23 @@ export const WorkspaceStudio: React.FC<WorkspaceStudioProps> = ({
                 </div>
             </div>
 
+            {/* ── FORMAT INFO BAR ── */}
+            <div className="no-print bg-gray-50 border-b border-gray-200 px-4 py-1.5 flex items-center gap-5 text-xs text-gray-500 shrink-0 font-mono">
+                <span className="text-indigo-700 font-semibold font-sans">{tmpl.name}</span>
+                <span>A4 • {tmpl.cols === 2 ? '2-column' : '1-column'}</span>
+                <span>Body {tmpl.fontSize} / {tmpl.lineHeight}×</span>
+                <span>Title {tmpl.titleSize}</span>
+                <span title="Top / Bottom margins">Margins ↑{tmpl.mt}mm ↓{tmpl.mb}mm ↔{tmpl.ms}mm</span>
+                <span>Headings {tmpl.headingNumbering === 'roman' ? 'I. Roman (centered)' : '1. Decimal (left)'}</span>
+                <span>Abstract {tmpl.abstractStyle === 'bold-italic-em' ? 'Bold-italic em-dash (IEEE)' : 'Normal (Springer)'}</span>
+                {tmpl.showPageNumbers === false && <span className="text-amber-600">No page nums (publisher adds)</span>}
+            </div>
+
             {/* ── VIEWPORT ── */}
             <div
                 ref={viewportRef}
-                className="flex-1 overflow-y-scroll relative print:overflow-visible"
-                style={{ background: '#525659', padding: `${VIEWPORT_PAD}px 0` }}
+                className="flex-1 overflow-y-scroll relative"
+                style={{ background: '#525659', padding: '32px 0 80px' }}
             >
                 {isRefactoring && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
@@ -362,67 +438,137 @@ export const WorkspaceStudio: React.FC<WorkspaceStudioProps> = ({
                     </div>
                 )}
 
-                {/* Off-screen measure div — same font/cols as body, no clip */}
-                <MeasureDiv ref={measureRef} tmpl={tmpl} blocks={blocks} />
-
-                {/* Canvas: flex col of page+gap */}
+                {/* ── Document ── */}
                 <div
-                    ref={canvasRef}
+                    className="paper-doc"
                     style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'center',
                         width: `${A4_W_MM}mm`,
                         margin: '0 auto',
-                        paddingBottom: `${VIEWPORT_PAD}px`,
-                        zoom: zoom / 100,
+                        position: 'relative',
+                        background: 'white',
+                        boxShadow: '0 2px 16px rgba(0,0,0,0.3), 0 8px 40px rgba(0,0,0,0.2)',
+                        transform: `scale(${zoom / 100})`,
                         transformOrigin: 'top center',
+                        marginBottom: zoom < 100 ? `${(zoom / 100 - 1) * A4_H_MM * totalPages * 0.35}px` : 0,
                     }}
                 >
                     {blocks.length === 0 ? (
-                        <EmptyPage tmpl={tmpl} />
+                        <div style={{
+                            minHeight: `${A4_H_MM}mm`,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            padding: `${tmpl.mt}mm ${tmpl.ms}mm`,
+                            fontFamily: tmpl.fontFamily, color: '#9ca3af',
+                        }}>
+                            <div style={{ textAlign: 'center' }}>
+                                <FileText style={{ width: 40, height: 40, margin: '0 auto 12px', opacity: 0.3 }} />
+                                <p style={{ fontSize: '10pt' }}>Your paper will appear here</p>
+                                <p style={{ fontSize: '8pt', opacity: 0.6, marginTop: 4 }}>Draft sections using the Co-Author panel →</p>
+                            </div>
+                        </div>
                     ) : (
                         <>
-                            {Array.from({ length: totalPages }, (_, i) => (
-                                <React.Fragment key={i}>
-                                    {i > 0 && (
-                                        <div style={{
-                                            width: `${A4_W_MM}mm`, height: `${GAP_MM}mm`,
-                                            background: '#525659',
-                                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                            color: '#aaa', fontSize: '8pt',
-                                            fontFamily: 'Times New Roman, serif',
-                                            letterSpacing: '0.1em',
-                                            flexShrink: 0,
-                                            userSelect: 'none',
-                                        }}>
-                                            — {i + 1} —
-                                        </div>
-                                    )}
-                                    <PaperPage
-                                        pageIndex={i}
-                                        totalPages={totalPages}
-                                        tmpl={tmpl}
-                                        activeTemplate={activeTemplate}
-                                        blocks={blocks}
-                                        editingBlockId={editingBlockId}
-                                        setEditingBlockId={setEditingBlockId}
-                                        handleBlockChange={handleBlockChange}
-                                        handleHeadingChange={handleHeadingChange}
-                                        deleteBlock={deleteBlock}
-                                        onOpenPaper={onOpenPaper}
-                                        activeProject={activeProject}
-                                        activeFileName={activeFileName}
-                                    />
-                                </React.Fragment>
+                            {/* Page gap bars at each A4 boundary (like Overleaf) */}
+                            {Array.from({ length: totalPages - 1 }, (_, i) => (
+                                <div key={`gap-${i}`} style={{
+                                    position: 'absolute',
+                                    left: -32, right: -32,
+                                    top: `${(i + 1) * A4_H_MM}mm`,
+                                    height: `${PAGE_GAP_MM}mm`,
+                                    background: 'linear-gradient(to bottom, rgba(0,0,0,0.18) 0%, #404347 15%, #404347 85%, rgba(0,0,0,0.18) 100%)',
+                                    zIndex: 20,
+                                    pointerEvents: 'none',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                }}>
+                                    <span style={{
+                                        fontSize: '7pt', color: 'rgba(255,255,255,0.45)',
+                                        fontFamily: 'sans-serif', letterSpacing: '0.1em',
+                                        userSelect: 'none',
+                                    }}>Page {i + 2}</span>
+                                </div>
                             ))}
+
+                            {/* Running headers at each page boundary */}
+                            {Array.from({ length: totalPages }, (_, i) => {
+                                const skipFirst = tmpl.noHeaderOnFirst && i === 0;
+                                if (skipFirst) return null;
+                                return (
+                                    <div key={`hdr-${i}`} style={{
+                                        position: 'absolute',
+                                        left: `${tmpl.ms}mm`, right: `${tmpl.ms}mm`,
+                                        top: `calc(${i * A4_H_MM}mm + ${hdrTopPx}px)`,
+                                        display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
+                                        borderBottom: '1px solid #000',
+                                        paddingBottom: '2pt',
+                                        fontSize: '9pt',
+                                        fontFamily: tmpl.fontFamily,
+                                        fontStyle: tmpl.hdrStyle === 'italic' ? 'italic' : 'normal',
+                                        zIndex: 5,
+                                        background: 'white',
+                                    }}>
+                                        {i === 0 || i === (tmpl.noHeaderOnFirst ? 1 : 0) ? (
+                                            // First editable page header
+                                            <>
+                                                <input value={runningHeader} onChange={e => setRunningHeader(e.target.value)}
+                                                    placeholder={derivedHdrLeft}
+                                                    style={{ border: 'none', outline: 'none', background: 'transparent', fontStyle: 'inherit', fontFamily: 'inherit', fontSize: 'inherit', width: '60%', cursor: 'text' }} />
+                                                <input value={pageFooter} onChange={e => setPageFooter(e.target.value)}
+                                                    placeholder={derivedHdrRight}
+                                                    style={{ border: 'none', outline: 'none', background: 'transparent', fontStyle: 'inherit', fontFamily: 'inherit', fontSize: 'inherit', textAlign: 'right', width: '40%', cursor: 'text' }} />
+                                            </>
+                                        ) : (
+                                            <>
+                                                <span>{i % 2 === 0 ? (runningHeader || derivedHdrLeft) : (pageFooter || derivedHdrRight)}</span>
+                                                {tmpl.showPageNumbers !== false && <span style={{ fontStyle: 'normal' }}>{i + 1}</span>}
+                                            </>
+                                        )}
+                                    </div>
+                                );
+                            })}
+
+                            {/* Main content area — flows naturally, no clipping */}
+                            <div
+                                ref={contentRef}
+                                className={`paper-content-area ${tmpl.name.toLowerCase()}-format`}
+                                style={{
+                                    marginTop: `${tmpl.mt}mm`,
+                                    marginLeft: `${tmpl.ms}mm`,
+                                    marginRight: `${tmpl.ms}mm`,
+                                    paddingBottom: `${tmpl.mb}mm`,
+                                    // For multi-column (IEEE): CSS columns fill naturally
+                                    columnCount: tmpl.cols,
+                                    columnGap: tmpl.colGap ? `${tmpl.colGap}mm` : undefined,
+                                    columnFill: 'auto',
+                                    // Height fills N pages so CSS columns flow across pages
+                                    minHeight: `${tmpl.bodyH * totalPages}mm`,
+                                    fontFamily: tmpl.fontFamily,
+                                    fontSize: tmpl.fontSize,
+                                    lineHeight: tmpl.lineHeight,
+                                    textAlign: 'justify',
+                                    color: '#000',
+                                }}
+                            >
+                                <FrontMatter tmpl={tmpl} blocks={blocks} handleBlockChange={handleBlockChange} />
+                                {blocks.filter(b => b.type === 'section').map((block, idx) => (
+                                    <SectionBlock
+                                        key={block.id}
+                                        block={block}
+                                        idx={idx}
+                                        tmpl={tmpl}
+                                        onChange={handleBlockChange}
+                                        onHeadingChange={handleHeadingChange}
+                                        onDelete={deleteBlock}
+                                    />
+                                ))}
+                            </div>
                         </>
                     )}
                 </div>
             </div>
 
             {/* ── PAGINATION PILL ── */}
-            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40 print:hidden">
+            <div className="no-print absolute bottom-6 left-1/2 -translate-x-1/2 z-40">
                 <div className="bg-gray-900 text-white rounded-full shadow-2xl px-4 py-2 flex items-center gap-3 text-sm font-medium border border-gray-700/50">
                     <button onClick={() => scrollToPage(currentPage - 1)} disabled={currentPage <= 1}
                         className="p-1 hover:bg-gray-700 rounded-full disabled:opacity-30">
@@ -443,224 +589,86 @@ export const WorkspaceStudio: React.FC<WorkspaceStudioProps> = ({
     );
 };
 
-// ─── MeasureDiv ───────────────────────────────────────────────────────────────
-// Hidden off-screen div that holds all content (no clip) for measuring height.
-const MeasureDiv = React.forwardRef<HTMLDivElement, { tmpl: TemplateConfig; blocks: Block[] }>(
-    ({ tmpl, blocks }, ref) => (
-        <div
-            ref={ref}
-            style={{
-                position: 'fixed',
-                top: '-99999px',
-                left: '-99999px',
-                width: `${A4_W_MM - tmpl.ms * 2}mm`,
-                height: 'auto',
-                overflow: 'visible',
-                visibility: 'hidden',
-                pointerEvents: 'none',
-                fontFamily: tmpl.fontFamily,
-                fontSize: tmpl.fontSize,
-                lineHeight: tmpl.lineHeight,
-                columnCount: tmpl.cols,
-                columnGap: tmpl.colGap ? `${tmpl.colGap}mm` : undefined,
-            }}
-        >
-            {/* Front matter */}
-            {blocks.filter(b => ['title','authors','abstract','keywords'].includes(b.type)).map(b => (
-                <div key={b.id}>{b.content}</div>
-            ))}
-            {/* Body sections */}
-            {blocks.filter(b => b.type === 'section').map((b, i) => (
-                <div key={b.id} style={{ breakInside: 'avoid-column' }}>
-                    <div style={{ fontWeight: b.type === 'section' ? 'bold' : 'normal' }}>{i + 1}. {b.heading}</div>
-                    <div>{b.content}</div>
-                </div>
-            ))}
-        </div>
-    )
-);
+const toRoman = (num: number): string => {
+    if (num < 1 || num > 3999) return num.toString();
+    const numerals = [
+        { value: 1000, symbol: 'M' }, { value: 900, symbol: 'CM' }, { value: 500, symbol: 'D' },
+        { value: 400, symbol: 'CD' }, { value: 100, symbol: 'C' }, { value: 90, symbol: 'XC' },
+        { value: 50, symbol: 'L' }, { value: 40, symbol: 'XL' }, { value: 10, symbol: 'X' },
+        { value: 9, symbol: 'IX' }, { value: 5, symbol: 'V' }, { value: 4, symbol: 'IV' },
+        { value: 1, symbol: 'I' },
+    ];
+    let result = '';
+    for (const { value, symbol } of numerals) {
+        while (num >= value) {
+            result += symbol;
+            num -= value;
+        }
+    }
+    return result;
+};
 
-// ─── EmptyPage ────────────────────────────────────────────────────────────────
-const EmptyPage: React.FC<{ tmpl: TemplateConfig }> = ({ tmpl }) => (
-    <div style={{
-        width: `${A4_W_MM}mm`, height: `${A4_H_MM}mm`,
-        background: 'white', boxShadow: '0 4px 20px rgba(0,0,0,0.35)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        flexShrink: 0,
-        padding: `${tmpl.mt}mm ${tmpl.ms}mm ${tmpl.mb}mm ${tmpl.ms}mm`,
-        boxSizing: 'border-box',
-    }}>
-        <div style={{ textAlign: 'center', color: '#9ca3af' }}>
-            <FileText style={{ width: 40, height: 40, margin: '0 auto 12px', opacity: 0.3 }} />
-            <p style={{ fontSize: '10pt', fontFamily: tmpl.fontFamily }}>Your paper will appear here</p>
-            <p style={{ fontSize: '8pt', opacity: 0.6, marginTop: 4, fontFamily: tmpl.fontFamily }}>
-                Draft sections using the Co-Author panel →
-            </p>
-        </div>
-    </div>
-);
+const getHeadingPrefix = (idx: number, numbering: 'roman' | 'decimal'): string => {
+    const num = idx + 1;
+    if (numbering === 'roman') {
+        return toRoman(num) + '.';
+    }
+    return num.toString() + '.';
+};
 
-// ─── PaperPage ────────────────────────────────────────────────────────────────
-// Each A4 page is a fixed-size clip window.
-// Inside it we render the FULL content stream but shift it up so only
-// this page's slice is visible.  The shift = pageIndex × bodyH.
-// For page 0 there is no shift — the stream starts at the top of page 1.
-interface PaperPageProps {
-    pageIndex: number;
-    totalPages: number;
+// ─── SectionBlock ─────────────────────────────────────────────────────────────
+interface SectionBlockProps {
+    block: Block;
+    idx: number;
     tmpl: TemplateConfig;
-    activeTemplate: string;
-    blocks: Block[];
-    editingBlockId: string | null;
-    setEditingBlockId: (id: string | null) => void;
-    handleBlockChange: (id: string, v: string) => void;
-    handleHeadingChange: (id: string, v: string) => void;
-    deleteBlock: (id: string) => void;
-    onOpenPaper?: (paperId: string, page?: number, highlightText?: string) => void;
-    activeProject?: Project | null;
-    activeFileName?: string;
+    onChange: (id: string, v: string) => void;
+    onHeadingChange: (id: string, v: string) => void;
+    onDelete: (id: string) => void;
 }
 
-const PaperPage: React.FC<PaperPageProps> = ({
-    pageIndex, totalPages, tmpl, activeTemplate, blocks,
-    editingBlockId, setEditingBlockId,
-    handleBlockChange, handleHeadingChange, deleteBlock,
-    onOpenPaper, activeProject, activeFileName,
+const SectionBlock: React.FC<SectionBlockProps> = ({
+    block, idx, tmpl, onChange, onHeadingChange, onDelete,
 }) => {
-    // How many mm to shift the inner content stream upward
-    const shiftMm = pageIndex * tmpl.bodyH;
-    const title  = blocks.find(b => b.type === 'title')?.content  ?? activeFileName ?? 'Untitled';
-    const authors = blocks.find(b => b.type === 'authors')?.content ?? '';
-    const authorShort = authors.split('\n')[0]?.split(',')[0]?.trim() ?? 'Authors';
-
-    // Running header text (left = author et al., right = short title)
-    const hdrLeft  = authorShort ? `${authorShort} et al.` : '';
-    const hdrRight = title.length > 50 ? title.slice(0, 48) + '…' : title;
-
+    const [hovered, setHovered] = useState(false);
+    const prefix = getHeadingPrefix(idx, tmpl.headingNumbering ?? 'decimal');
     return (
-        <div style={{
-            width: `${A4_W_MM}mm`,
-            height: `${A4_H_MM}mm`,
-            background: 'white',
-            boxShadow: '0 4px 20px rgba(0,0,0,0.35)',
-            overflow: 'hidden',
-            position: 'relative',
-            boxSizing: 'border-box',
-            flexShrink: 0,
-            color: '#000',
-            fontFamily: tmpl.fontFamily,
-            fontSize: tmpl.fontSize,
-            lineHeight: tmpl.lineHeight,
-        }}>
-            {/* ── Running header ── */}
-            <div style={{
-                position: 'absolute',
-                top: `${tmpl.hdrMm}mm`,
-                left: `${tmpl.ms}mm`,
-                right: `${tmpl.ms}mm`,
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'baseline',
-                borderBottom: '1px solid #000',
-                paddingBottom: '2pt',
-                fontSize: '9pt',
-                fontStyle: tmpl.hdrStyle === 'italic' ? 'italic' : 'normal',
-            }}>
-                <span>{pageIndex % 2 === 0 ? hdrLeft : hdrRight}</span>
-                <span style={{ fontStyle: 'normal' }}>{pageIndex + 1}</span>
+        <div
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+            style={{ breakInside: 'avoid-column', pageBreakInside: 'avoid' }}
+        >
+            {/* Heading row: prefix + editable title + delete */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: '10pt', marginBottom: '3pt' }}>
+                <span style={{
+                    fontSize: tmpl.sectionSize, fontWeight: tmpl.sectionWeight,
+                    fontVariant: tmpl.sectionVariant ?? 'normal', fontFamily: tmpl.fontFamily,
+                    flexShrink: 0, userSelect: 'none', minWidth: '2em', textAlign: 'right',
+                }}>{prefix}</span>
+                <input
+                    value={block.heading ?? ''}
+                    onChange={e => onHeadingChange(block.id, e.target.value)}
+                    style={{
+                        fontSize: tmpl.sectionSize, fontWeight: tmpl.sectionWeight,
+                        textAlign: (tmpl.sectionAlign ?? 'left') as any,
+                        fontVariant: tmpl.sectionVariant ?? 'normal', fontFamily: tmpl.fontFamily,
+                        border: 'none', outline: 'none', background: 'transparent',
+                        flex: 1, cursor: 'text',
+                    }}
+                    placeholder="Section Title"
+                />
+                {hovered && (
+                    <button
+                        onClick={() => onDelete(block.id)}
+                        style={{ color: '#f87171', flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer' }}
+                        title="Delete section"
+                    >
+                        <Trash2 style={{ width: 12, height: 12 }} />
+                    </button>
+                )}
             </div>
 
-            {/* ── Content area — clipped inner stream ── */}
-            {/*
-             * The inner stream renders ALL content starting from the top margin.
-             * For page N we push it up by N×bodyH so the correct slice shows
-             * through the page's overflow:hidden clip window.
-             */}
-            <div style={{
-                position: 'absolute',
-                top: `${tmpl.mt}mm`,
-                left: `${tmpl.ms}mm`,
-                right: `${tmpl.ms}mm`,
-                bottom: `${tmpl.mb}mm`,
-                overflow: 'hidden',
-            }}>
-                <div style={{
-                    marginTop: shiftMm > 0 ? `-${shiftMm}mm` : undefined,
-                }}>
-                    {/* Front-matter block (page 1 only — hidden on other pages via clip) */}
-                    <FrontMatter
-                        tmpl={tmpl}
-                        blocks={blocks}
-                        editingBlockId={editingBlockId}
-                        setEditingBlockId={setEditingBlockId}
-                        handleBlockChange={handleBlockChange}
-                    />
-
-                    {/* Body columns — same height as total pages × bodyH so columns flow through */}
-                    <div style={{
-                        columnCount: tmpl.cols,
-                        columnGap: tmpl.colGap ? `${tmpl.colGap}mm` : undefined,
-                        columnFill: 'auto',
-                        height: `${tmpl.bodyH * totalPages}mm`,
-                        textAlign: 'justify',
-                    }}>
-                        {blocks.filter(b => b.type === 'section').map((block, idx) => (
-                            <div key={block.id} style={{ breakInside: 'avoid-column', pageBreakInside: 'avoid' }}>
-                                {/* Section heading */}
-                                <div className="group" style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
-                                    {editingBlockId === block.id ? (
-                                        <input
-                                            value={block.heading}
-                                            onChange={e => handleHeadingChange(block.id, e.target.value)}
-                                            style={{
-                                                fontSize: tmpl.sectionSize, fontWeight: tmpl.sectionWeight,
-                                                textAlign: tmpl.sectionAlign as any,
-                                                fontVariant: tmpl.sectionVariant ?? 'normal',
-                                                border: 'none', borderBottom: '1px solid #6366f1',
-                                                outline: 'none', width: '100%', background: 'transparent',
-                                                fontFamily: tmpl.fontFamily,
-                                            }}
-                                            placeholder="SECTION TITLE"
-                                        />
-                                    ) : (
-                                        <div
-                                            style={{
-                                                fontSize: tmpl.sectionSize, fontWeight: tmpl.sectionWeight,
-                                                textAlign: tmpl.sectionAlign as any,
-                                                fontVariant: tmpl.sectionVariant ?? 'normal',
-                                                marginTop: '10pt', marginBottom: '5pt',
-                                                cursor: 'pointer',
-                                                width: '100%',
-                                            }}
-                                            onClick={() => setEditingBlockId(block.id)}
-                                        >
-                                            {idx + 1}. {block.heading?.toUpperCase?.() ?? block.heading}
-                                        </div>
-                                    )}
-                                    {editingBlockId === block.id && (
-                                        <button
-                                            onClick={() => deleteBlock(block.id)}
-                                            style={{ color: '#f87171', flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer' }}
-                                        >
-                                            <Trash2 style={{ width: 12, height: 12 }} />
-                                        </button>
-                                    )}
-                                </div>
-                                {/* Section body */}
-                                <EditableBlock
-                                    block={block}
-                                    isEditing={editingBlockId === block.id}
-                                    setEditing={setEditingBlockId}
-                                    onChange={handleBlockChange}
-                                    tmpl={tmpl}
-                                    onOpenPaper={onOpenPaper}
-                                    activeProject={activeProject}
-                                />
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            </div>
+            {/* Body — always editable contentEditable */}
+            <EditableBlock block={block} onChange={onChange} tmpl={tmpl} />
         </div>
     );
 };
@@ -669,202 +677,141 @@ const PaperPage: React.FC<PaperPageProps> = ({
 interface FrontMatterProps {
     tmpl: TemplateConfig;
     blocks: Block[];
-    editingBlockId: string | null;
-    setEditingBlockId: (id: string | null) => void;
     handleBlockChange: (id: string, v: string) => void;
 }
 
-const FrontMatter: React.FC<FrontMatterProps> = ({
-    tmpl, blocks, editingBlockId, setEditingBlockId, handleBlockChange,
-}) => {
-    const titleBlock  = blocks.find(b => b.type === 'title');
-    const authBlock   = blocks.find(b => b.type === 'authors');
-    const absBlock    = blocks.find(b => b.type === 'abstract');
-    const kwBlock     = blocks.find(b => b.type === 'keywords');
+const FrontMatter: React.FC<FrontMatterProps> = ({ tmpl, blocks, handleBlockChange }) => {
+    const titleBlock = blocks.find(b => b.type === 'title');
+    const authBlock = blocks.find(b => b.type === 'authors');
+    const absBlock = blocks.find(b => b.type === 'abstract');
+    const kwBlock = blocks.find(b => b.type === 'keywords');
 
     if (!titleBlock && !authBlock && !absBlock) return null;
 
+    const isIEEE = tmpl.abstractStyle === 'bold-italic-em';
+
     return (
-        <div style={{ marginBottom: '12pt', textAlign: 'center', fontFamily: tmpl.fontFamily }}>
-            {/* Title */}
+        <div style={{ marginBottom: '10pt', textAlign: 'center', fontFamily: tmpl.fontFamily }}>
             {titleBlock && (
-                <EditableBlock
-                    block={titleBlock}
-                    isEditing={editingBlockId === titleBlock.id}
-                    setEditing={setEditingBlockId}
-                    onChange={handleBlockChange}
-                    tmpl={tmpl}
-                    style={{
-                        fontSize: tmpl.titleSize,
-                        fontWeight: tmpl.titleWeight,
-                        lineHeight: 1.2,
-                        marginBottom: '12pt',
-                        display: 'block',
-                        textAlign: 'center',
-                    }}
+                <EditableBlock block={titleBlock} onChange={handleBlockChange} tmpl={tmpl}
+                    style={{ fontSize: tmpl.titleSize, fontWeight: tmpl.titleWeight, lineHeight: 1.2, marginBottom: '10pt', display: 'block', textAlign: 'center' }}
                 />
             )}
-
-            {/* Authors */}
             {authBlock && (
-                <EditableBlock
-                    block={authBlock}
-                    isEditing={editingBlockId === authBlock.id}
-                    setEditing={setEditingBlockId}
-                    onChange={handleBlockChange}
-                    tmpl={tmpl}
-                    style={{
-                        fontSize: tmpl.fontSize,
-                        marginBottom: '8pt',
-                        display: 'block',
-                        textAlign: 'center',
-                    }}
+                <EditableBlock block={authBlock} onChange={handleBlockChange} tmpl={tmpl}
+                    style={{ fontSize: tmpl.fontSize, marginBottom: '8pt', display: 'block', textAlign: 'center' }}
                 />
             )}
-
-            {/* Abstract */}
             {absBlock && (
                 <div style={{
-                    textAlign: 'left',
-                    margin: `0 ${tmpl.abstractIndent ?? 0} 10pt`,
+                    textAlign: 'justify',
+                    margin: `0 ${tmpl.abstractIndent ?? 0} 8pt`,
                     fontSize: '9pt',
+                    // IEEE: entire abstract is bold
+                    fontWeight: isIEEE ? 'bold' : 'normal',
                 }}>
-                    <span style={{ fontWeight: 'bold' }}>Abstract. </span>
-                    <EditableBlock
-                        block={absBlock}
-                        isEditing={editingBlockId === absBlock.id}
-                        setEditing={setEditingBlockId}
-                        onChange={handleBlockChange}
-                        tmpl={tmpl}
-                        inline
-                    />
+                    {isIEEE ? (
+                        // IEEE: "Abstract—" bold italic, rest bold
+                        <><span style={{ fontStyle: 'italic' }}>Abstract—</span>
+                            <EditableBlock block={absBlock} onChange={handleBlockChange} tmpl={tmpl} inline /></>
+                    ) : (
+                        // Springer: "Abstract." bold text, rest normal
+                        <><span style={{ fontWeight: 'bold' }}>Abstract. </span>
+                            <EditableBlock block={absBlock} onChange={handleBlockChange} tmpl={tmpl} inline /></>
+                    )}
                 </div>
             )}
-
-            {/* Keywords */}
             {kwBlock && (
-                <div style={{
-                    textAlign: 'left',
-                    margin: `0 ${tmpl.abstractIndent ?? 0} 10pt`,
-                    fontSize: '9pt',
-                }}>
+                <div style={{ textAlign: 'left', margin: `0 ${tmpl.abstractIndent ?? 0} 10pt`, fontSize: '9pt' }}>
                     <span style={{ fontWeight: 'bold' }}>Keywords: </span>
-                    <EditableBlock
-                        block={kwBlock}
-                        isEditing={editingBlockId === kwBlock.id}
-                        setEditing={setEditingBlockId}
-                        onChange={handleBlockChange}
-                        tmpl={tmpl}
-                        inline
-                    />
+                    <EditableBlock block={kwBlock} onChange={handleBlockChange} tmpl={tmpl} inline />
                 </div>
             )}
-
-            {/* Horizontal rule before body */}
             <hr style={{ border: 'none', borderTop: '1px solid #ccc', margin: '8pt 0' }} />
         </div>
     );
 };
 
-// ─── EditableBlock ────────────────────────────────────────────────────────────
-let monacoConfigured = false;
-const setupMonaco = (monaco: any) => {
-    if (monacoConfigured) return;
-    monacoConfigured = true;
-    monaco.editor.defineTheme('scholar-dark', {
-        base: 'vs-dark', inherit: true, rules: [],
-        colors: { 'editor.background': '#1e1e1e' },
-    });
-};
-
-interface EditableBlockProps {
+// ─── TiptapBlock ──────────────────────────────────────────────────────────────
+interface TiptapBlockProps {
     block: Block;
-    isEditing: boolean;
-    setEditing: (id: string | null) => void;
-    onChange: (id: string, v: string) => void;
+    onChange: (id: string, markdown: string) => void;
     tmpl: TemplateConfig;
     inline?: boolean;
     style?: React.CSSProperties;
-    onOpenPaper?: (paperId: string, page?: number, highlightText?: string) => void;
-    activeProject?: Project | null;
+    placeholder?: string;
 }
 
-const EditableBlock: React.FC<EditableBlockProps> = ({
-    block, isEditing, setEditing, onChange, tmpl, inline = false, style,
+// Map Markdown string -> Tiptap HTML once
+const markdownToHtml = (md: string): Promise<string> =>
+    Promise.resolve(marked.parse(md || ''));
+
+const TiptapBlock: React.FC<TiptapBlockProps> = ({
+    block, onChange, tmpl, inline = false, style, placeholder = 'Start writing…',
 }) => {
-    const handleMount = (editor: any, monaco: any) => { setupMonaco(monaco); editor.focus(); };
+    const lastExternalContent = useRef(block.content);
 
-    const renderMarkdown = (text: string) => (
-        <Markdown components={{
-            p:      ({ node, ...p }) => <p      {...p} style={{ margin: '0 0 4pt', textIndent: block.type === 'section' ? '3.5mm' : 0 }} />,
-            strong: ({ node, ...p }) => <strong {...p} />,
-            em:     ({ node, ...p }) => <em     {...p} />,
-            li:     ({ node, ...p }) => <li     {...p} style={{ marginLeft: 16 }} />,
-        }}>
-            {text}
-        </Markdown>
-    );
+    const editor = useEditor({
+        extensions: [
+            StarterKit.configure({ heading: { levels: [1, 2, 3] } }),
+            TextAlign.configure({ types: ['heading', 'paragraph'] }),
+            Underline,
+            Placeholder.configure({ placeholder }),
+        ],
+        editorProps: {
+            attributes: {
+                class: 'tiptap-block',
+                spellcheck: 'true',
+            },
+        },
+        // Fire onChange with Markdown on every edit
+        onUpdate: ({ editor: ed }) => {
+            const html = ed.getHTML();
+            const md = turndownService.turndown(html);
+            lastExternalContent.current = md;
+            onChange(block.id, md);
+        },
+    });
 
-    if (isEditing) {
-        return (
-            <div style={{
-                border: '1px solid #6366f1',
-                borderRadius: 4,
-                background: '#1e1e1e',
-                boxShadow: '0 0 0 3px rgba(99,102,241,0.2)',
-                padding: 8,
-                margin: '-8px',
-                zIndex: 10,
-                position: 'relative',
-            }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4, borderBottom: '1px solid #333', paddingBottom: 4 }}>
-                    <span style={{ fontSize: 10, color: '#818cf8', fontWeight: 'bold', textTransform: 'uppercase', fontFamily: 'monospace' }}>
-                        ✏ Editing {block.type}
-                    </span>
-                    <button
-                        onClick={e => { e.stopPropagation(); setEditing(null); }}
-                        style={{ color: '#4ade80', background: 'none', border: 'none', cursor: 'pointer', padding: 2 }}
-                        title="Done"
-                    >
-                        <Check style={{ width: 14, height: 14 }} />
-                    </button>
-                </div>
-                <Editor
-                    height={block.type === 'section' ? '260px' : '80px'}
-                    defaultLanguage="markdown"
-                    value={block.content}
-                    onChange={val => onChange(block.id, val || '')}
-                    onMount={handleMount}
-                    theme="scholar-dark"
-                    options={{
-                        minimap: { enabled: false }, lineNumbers: 'off', wordWrap: 'on',
-                        fontSize: 13, padding: { top: 6, bottom: 6 },
-                        scrollBeyondLastLine: false, fontFamily: 'JetBrains Mono, monospace',
-                    }}
-                />
-            </div>
-        );
-    }
+    // Seed content on first mount
+    useEffect(() => {
+        if (!editor) return;
+        markdownToHtml(block.content).then(html => {
+            editor.commands.setContent(html, false);
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [editor]);
 
-    const contentEl = (
-        <div
-            style={{
-                cursor: 'pointer',
-                position: 'relative',
-                borderRadius: 2,
-                transition: 'background 0.15s',
-                ...style,
-            }}
-            className="editable-hover"
-            onClick={() => setEditing(block.id)}
-            title="Click to edit"
-        >
-            {block.type === 'title' || block.type === 'authors'
-                ? block.content.split('\n').map((line, i) => <div key={i}>{line || <br />}</div>)
-                : renderMarkdown(block.content)
-            }
-        </div>
-    );
+    // Sync external content updates (e.g. AI streaming) without disrupting focus
+    useEffect(() => {
+        if (!editor) return;
+        if (block.content === lastExternalContent.current) return;
+        if (editor.isFocused) return; // never interrupt the user mid-typing
+        lastExternalContent.current = block.content;
+        markdownToHtml(block.content).then(html => {
+            const { from, to } = editor.state.selection;
+            editor.commands.setContent(html, false);
+            // restore cursor if practical
+            try { editor.commands.setTextSelection({ from, to }); } catch { /* ignore */ }
+        });
+    }, [block.content, editor]);
 
-    return inline ? <span onClick={() => setEditing(block.id)} style={{ cursor: 'pointer' }}>{contentEl}</span> : contentEl;
+    const containerStyle: React.CSSProperties = {
+        outline: 'none',
+        fontFamily: tmpl.fontFamily,
+        fontSize: block.type === 'title' ? tmpl.titleSize
+            : block.type === 'abstract' ? '9pt'
+                : tmpl.fontSize,
+        fontWeight: block.type === 'title' ? tmpl.titleWeight : 'normal',
+        minHeight: '1em',
+        ...style,
+    };
+
+    return inline
+        ? <span style={{ display: 'inline' }}><EditorContent editor={editor} style={containerStyle} /></span>
+        : <EditorContent editor={editor} style={containerStyle} />;
 };
+
+// ─── Keep legacy alias so FrontMatter/SectionBlock call sites stay unchanged ────────
+// FrontMatter and SectionBlock use <EditableBlock> — alias to TiptapBlock
+const EditableBlock = TiptapBlock;

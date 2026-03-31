@@ -459,7 +459,6 @@ export default function App() {
         onToggleContext: toggleContext,
         // Mobile close logic depends on which side it is mounted, handled below
         onCloseMobile: () => { },
-        onOpenAssetModal: () => setIsAssetModalOpen(true),
         onOpenPdfModal: () => setIsPdfModalOpen(true),
         onAnalyzeAsset: handleAnalyzeAsset,
         // Collapse logic handled in render
@@ -503,6 +502,7 @@ export default function App() {
         activeFileContent, // calculated below
         onUpdateSection: handleUpdateSection,
         onAnalyzeAsset: handleAnalyzeAsset,
+        onOpenAssetModal: () => setIsAssetModalOpen(true),
         pendingMessage: pendingMessage,
         onClearPendingMessage: () => setPendingMessage(null),
         selectedContextIds // Pass selected paper IDs for context

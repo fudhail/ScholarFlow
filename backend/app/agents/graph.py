@@ -240,16 +240,27 @@ def save_papers_to_context(state: ResearchState) -> dict:
 
 
 def finalize_draft(state: ResearchState) -> dict:
-    """Mark draft as completed after approval"""
+    """Mark draft as completed after approval and append bibliography if present"""
+    draft = state.get("current_draft", {})
+    content = draft.get("content", "")
+    
+    # Check if bibliography exists in state
+    bibliography = state.get("bibliography", [])
+    if bibliography and isinstance(bibliography, list) and len(bibliography) > 0:
+        bib_text = bibliography[0].get("text", "")
+        if bib_text and "## References" not in content and "## Bibliography" not in content:
+            content += "\n\n## References\n\n" + bib_text
+            
     return {
         "current_draft": {
-            **state.get("current_draft", {}),
+            **draft,
+            "content": content,
             "status": "completed"
         },
         "logs": [{
             "step": "finalize",
             "source": "System",
-            "message": "✓ Draft approved and finalized",
+            "message": "✓ Draft approved and finalized with bibliography appended",
             "status": "completed"
         }]
     }

@@ -1,12 +1,15 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import {
-    Settings, ArrowLeft, Upload, X, PanelRightClose, PanelLeftClose,
-    Bot, BookOpen, PlusCircle, CheckSquare, Square, MoreVertical, Activity, PenTool, MessageSquarePlus, MessageSquare
+    Settings, ArrowLeft, X, PanelRightClose, PanelLeftClose, Upload,
+    BookOpen, PlusCircle, CheckSquare, Square, MoreVertical, Activity, PenTool, MessageSquarePlus, MessageSquare,
+    Send, Loader2, Sparkles
 } from 'lucide-react';
 import { AppMode, ViewState, Project, ProjectAsset, ProjectFile, AgentState, AgentLog, ChatSession, LibraryPage } from '../types';
 import { fetchChatSessions, createChatSession, fetchLibraryPage } from '../lib/api-client';
 import { AgentAvatar } from './AgentAvatar';
+import Markdown from 'react-markdown';
+import { useStreamingChat } from '../hooks/useStreaming';
 
 interface SidebarLeftProps {
     appMode: AppMode;
@@ -21,7 +24,6 @@ interface SidebarLeftProps {
     onCloseMobile?: () => void;
 
     // Modals
-    onOpenAssetModal: () => void;
     onOpenPdfModal: () => void;
 
     onAnalyzeAsset: (asset: ProjectAsset) => void;
@@ -60,12 +62,12 @@ export const SidebarLeft: React.FC<SidebarLeftProps> = ({
     selectedContextIds,
     onToggleContext,
     onCloseMobile,
-    onOpenAssetModal,
     onOpenPdfModal,
     onCollapse,
     position = 'left',
 
     agentState = AgentState.IDLE,
+    addAgentLog,
     logs = [],
     activeSessionId,
     onSessionSelect
@@ -132,13 +134,48 @@ export const SidebarLeft: React.FC<SidebarLeftProps> = ({
         }
     };
 
-    // Auto-Pilot State (Local for visual toggle)
-    const [isAutoPilot, setIsAutoPilot] = useState(true);
-
     // Tooltip State
     const [hoveredPaper, setHoveredPaper] = useState<{ id: string, top: number, left: number } | null>(null);
     const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
     const logsEndRef = useRef<HTMLDivElement>(null);
+
+    // ── Co-Author Chat ────────────────────────────────────────────────────────
+    const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'agent', text: string }[]>([]);
+    const [chatInput, setChatInput]       = useState('');
+    const chatEndRef = useRef<HTMLDivElement>(null);
+
+    const { streamChat, isStreaming: isChatStreaming } = useStreamingChat(agentState, addAgentLog);
+
+    // Seed greeting
+    useEffect(() => {
+        if (isStudio && chatMessages.length === 0) {
+            setChatMessages([{ role: 'agent', text: 'Hi! I\'m your Co-Author. Ask me anything about your paper, your sources, or how to improve a section.' }]);
+        }
+    }, [isStudio]);
+
+    // Auto-scroll chat
+    useEffect(() => {
+        chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [chatMessages]);
+
+    const handleSendMessage = async (textOverride?: string) => {
+        const text = (textOverride || chatInput).trim();
+        if (!text || !activeProject) return;
+        if (!textOverride) setChatInput('');
+        setChatMessages(prev => [...prev, { role: 'user', text }]);
+        try {
+            const paperIds = selectedContextIds && selectedContextIds.size > 0
+                ? Array.from(selectedContextIds)
+                : (activeProject.papers || []).map(p => p.id);
+            await streamChat(
+                { project_id: activeProject.id, message: text, selected_paper_ids: paperIds, lab_asset_ids: [] },
+                undefined,
+                (fullText) => { setChatMessages(prev => [...prev, { role: 'agent', text: fullText }]); }
+            );
+        } catch (e) {
+            console.error(e);
+        }
+    };
 
     // Auto-scroll logs
     useEffect(() => {
@@ -204,55 +241,69 @@ export const SidebarLeft: React.FC<SidebarLeftProps> = ({
                     </div>
                 </div>
 
-                {/* --- STUDIO MODE: MONITOR + ACTIONS --- */}
+                {/* --- STUDIO MODE: MONITOR + CHAT --- */}
                 {isStudio && (
                     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
 
-                        {/* 1. MONITOR SECTION */}
-                        <div className="shrink-0 bg-[#0a0a0a] flex flex-col items-center pt-6 pb-2">
-                            <div className="transform scale-90 -my-2">
+                        {/* 1. COMPACT MONITOR SECTION */}
+                        <div className="shrink-0 bg-[#0a0a0a] flex flex-col items-center pt-3 pb-1">
+                            <div className="transform scale-75 -my-3">
                                 <AgentAvatar state={agentState} />
                             </div>
-                            {/* Scrolling Console Logs */}
-                            <div className="w-full h-48 overflow-y-auto px-4 py-2 font-mono text-[10px] space-y-2 mt-4">
+                            {/* Compact Console Logs */}
+                            <div className="w-full h-24 overflow-y-auto px-4 py-1 font-mono text-[10px] space-y-1 mt-2">
                                 {logs.length === 0 ? (
-                                    <div className="text-gray-600 italic text-center mt-4 opacity-50">System Idle.</div>
+                                    <div className="text-gray-600 italic text-center mt-2 opacity-50">System Idle.</div>
                                 ) : (
                                     logs.map(log => (
-                                        <div key={log.id} className="text-green-500/90 leading-tight animate-in fade-in slide-in-from-left-1 border-l-2 border-green-500/20 pl-2 py-0.5">
-                                            <div className="flex items-center gap-2 mb-0.5">
-                                                <span className="opacity-50">{log.timestamp.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
-                                                <span className="opacity-70 uppercase tracking-wider text-[9px]">[{log.source}]</span>
-                                            </div>
+                                        <div key={log.id} className="text-green-500/90 leading-tight border-l-2 border-green-500/20 pl-2 py-0.5">
                                             <div className={log.source === 'Thought' ? 'text-amber-500 italic' : ''}>{log.message}</div>
                                         </div>
                                     ))
                                 )}
                                 <div ref={logsEndRef} />
                             </div>
-                            {/* Gradient Fade for Logs */}
-                            <div className="w-full h-8 -mt-8 bg-gradient-to-t from-black to-transparent pointer-events-none relative z-10" />
+                            <div className="w-full h-6 -mt-6 bg-gradient-to-t from-black to-transparent pointer-events-none relative z-10" />
                         </div>
 
-                        {/* 2. ACTIONS SECTION */}
-                        <div className="p-4 space-y-3 shrink-0 border-t border-gray-800/50">
-                            <button
-                                onClick={() => setIsAutoPilot(!isAutoPilot)}
-                                className={`w-full flex items-center justify-center gap-2 px-3 py-3 text-xs font-bold uppercase tracking-wide rounded-lg transition-all border ${isAutoPilot
-                                    ? 'bg-[#1e1b4b] border-indigo-500/50 text-indigo-300 shadow-[0_0_15px_rgba(99,102,241,0.2)]'
-                                    : 'bg-transparent border-gray-700 text-gray-500 hover:text-gray-300'
-                                    }`}
-                            >
-                                <Bot className={`w-3.5 h-3.5 ${isAutoPilot ? 'text-indigo-400' : ''}`} />
-                                Auto-Pilot: {isAutoPilot ? 'ON' : 'OFF'}
-                            </button>
-                            <button
-                                onClick={() => onOpenAssetModal()}
-                                className="w-full flex items-center justify-center gap-2 px-3 py-3 text-xs font-bold uppercase tracking-wide rounded-lg transition-all bg-[#15803d] hover:bg-[#166534] text-white shadow-lg shadow-green-900/20 border border-green-600"
-                            >
-                                <Upload className="w-3.5 h-3.5" />
-                                Upload Asset
-                            </button>
+                        {/* 2. CO-AUTHOR CHAT */}
+                        <div className="flex-1 flex flex-col min-h-0 bg-[#0d0d0d] border-t border-gray-800">
+                            {/* Header */}
+                            <div className="shrink-0 px-3 py-2 border-b border-gray-800 flex items-center gap-2">
+                                <Sparkles className="w-3 h-3 text-indigo-400" />
+                                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Co-Author Chat</span>
+                            </div>
+                            {/* Messages */}
+                            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                                {chatMessages.map((m, i) => (
+                                    <div key={i} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
+                                        <div className={`max-w-[95%] rounded-lg px-3 py-2 text-xs leading-relaxed ${m.role === 'user' ? 'bg-indigo-900/50 text-indigo-100 border border-indigo-500/30' : 'bg-gray-800 text-gray-300'}`}>
+                                            {m.role === 'agent' ? <Markdown>{m.text}</Markdown> : m.text}
+                                        </div>
+                                    </div>
+                                ))}
+                                {isChatStreaming && (
+                                    <div className="flex items-center gap-2 text-gray-500 text-xs italic">
+                                        <Loader2 className="w-3 h-3 animate-spin" /> Thinking...
+                                    </div>
+                                )}
+                                <div ref={chatEndRef} />
+                            </div>
+                            {/* Input */}
+                            <div className="p-2 border-t border-gray-800 bg-[#18181b] shrink-0">
+                                <div className="relative">
+                                    <input
+                                        value={chatInput}
+                                        onChange={(e) => setChatInput(e.target.value)}
+                                        onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                                        placeholder="Ask Co-Author..."
+                                        className="w-full bg-black border border-gray-700 rounded pl-3 pr-8 py-2 text-xs text-gray-300 focus:border-indigo-500 outline-none"
+                                    />
+                                    <button onClick={() => handleSendMessage()} disabled={isChatStreaming} className="absolute right-1.5 top-1.5 text-gray-500 hover:text-white disabled:opacity-30">
+                                        <Send className="w-3 h-3" />
+                                    </button>
+                                </div>
+                            </div>
                         </div>
 
                     </div>

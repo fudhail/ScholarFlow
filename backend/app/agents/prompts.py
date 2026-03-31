@@ -20,7 +20,7 @@ INSTRUCTIONS:
 TONE: Scholarly, measured, confident but not overclaimed
 CITATIONS: Heavy use of [1], [2] format to establish prior work
 LENGTH: 2-4 paragraphs
-DO NOT: Include detailed methodology or results here
+DO NOT: Include detailed methodology or results here. DO NOT output a Reference list or Bibliography at the end of your response. Use ONLY inline citations (e.g., [1], [2]). The full bibliography will be generated later.
 """,
         "context_emphasis": "literature"  # Primarily use literature
     },
@@ -43,7 +43,7 @@ INSTRUCTIONS:
 TONE: Critical but fair, analytical
 CITATIONS: Extensive [1], [2], [3] with comparisons
 LENGTH: 3-6 paragraphs depending on field breadth
-DO NOT: Describe YOUR methodology here (save for Methods)
+DO NOT: Describe YOUR methodology here (save for Methods). DO NOT output a Reference list or Bibliography at the end of your response. Use ONLY inline citations (e.g., [1], [2]). The full bibliography will be generated later.
 """,
         "context_emphasis": "literature"
     },
@@ -70,6 +70,7 @@ TONE: Technical, precise, objective
 CITATIONS: Moderate - cite to justify methodology choices
 LENGTH: 2-4 paragraphs (can be longer for complex setups)
 FOCUS: Make it clear this is describing what THE STUDENT did
+CRITICAL: DO NOT output a Reference list or Bibliography at the end of your response. Use ONLY inline citations (e.g., [1], [2]). The full bibliography will be generated later.
 """,
         "context_emphasis": "research"  # 70% student's methods, 30% literature
     },
@@ -96,7 +97,7 @@ INSTRUCTIONS:
 TONE: Objective, data-driven, factual
 CITATIONS: Minimal - only when comparing to specific prior results
 LENGTH: 2-5 paragraphs
-DO NOT: Interpret or explain WHY results occurred (that's Discussion)
+DO NOT: Interpret or explain WHY results occurred (that's Discussion). DO NOT output a Reference list or Bibliography at the end of your response. Use ONLY inline citations (e.g., [1], [2]). The full bibliography will be generated later.
 """,
         "context_emphasis": "research"  # 80% student's data, 20% comparisons
     },
@@ -124,6 +125,7 @@ TONE: Analytical, explanatory, honest about limitations
 CITATIONS: Balanced - support interpretations with [1], [2]
 LENGTH: 3-5 paragraphs
 BALANCE: 50% student's work, 50% literature context
+CRITICAL: DO NOT output a Reference list or Bibliography at the end of your response. Use ONLY inline citations (e.g., [1], [2]). The full bibliography will be generated later.
 """,
         "context_emphasis": "balanced"
     },
@@ -149,7 +151,7 @@ INSTRUCTIONS:
 TONE: Confident, forward-looking, concise
 CITATIONS: Minimal or none
 LENGTH: 1-2 paragraphs
-DO NOT: Introduce new results or claims here
+DO NOT: Introduce new results or claims here. DO NOT output a Reference list or Bibliography at the end of your response. Use ONLY inline citations (e.g., [1], [2]). The full bibliography will be generated later.
 """,
         "context_emphasis": "research"
     },
@@ -171,6 +173,7 @@ INSTRUCTIONS:
 Respond to the user's request in an academic tone.
 Use citations [1], [2] where appropriate.
 Maintain scholarly precision and objectivity.
+CRITICAL: DO NOT output a Reference list or Bibliography at the end of your response. Use ONLY inline citations (e.g., [1], [2]). The full bibliography will be generated later.
 """,
         "context_emphasis": "balanced"
     }
