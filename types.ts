@@ -45,10 +45,10 @@ export interface Citation {
 
 export interface AgentLog {
   id: string;
-  source: 'Router' | 'Ranker' | 'Synthesizer' | 'Co-Author' | 'System' | 'Thought' | 'Avatar' | 'Writer';
+  source: 'Router' | 'Ranker' | 'Synthesizer' | 'Co-Author' | 'System' | 'Thought' | 'Avatar' | 'Writer' | 'Reviewer';
   message: string;
   timestamp: Date;
-  status?: 'pending' | 'success' | 'error' | 'info';
+  status?: 'pending' | 'success' | 'error' | 'info' | 'warning';
   metadata?: any; 
 }
 
@@ -70,6 +70,22 @@ export interface ProjectAsset {
   name: string;
   type: 'image' | 'data' | 'code';
   url?: string;
+  kind?: 'lab' | 'research';
+  researchAssetType?: string;
+  description?: string;
+  methodologyNote?: string;
+  sectionHint?: string;
+  aiDescription?: string;
+}
+
+export interface PendingProjectAsset {
+  name: string;
+  type: 'image' | 'data' | 'code';
+  file: File;
+  kind?: 'lab' | 'research';
+  description?: string;
+  methodologyNote?: string;
+  sectionHint?: string;
 }
 
 export interface ProjectFile {

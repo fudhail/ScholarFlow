@@ -14,6 +14,11 @@ interface AgentStore {
   isStreaming: boolean;
 
   // Actions
+  setAgentState: (state: AgentState) => void;
+  addAgentLog: (source: AgentLog['source'], message: string, status?: AgentLog['status']) => void;
+  setPendingMessage: (message: string | null) => void;
+  setIsStreaming: (streaming: boolean) => void;
+
   // Avatar Speech (Queue System)
   speechQueue: string[];
   isAvatarSpeaking: boolean;
@@ -45,18 +50,30 @@ export const useAgentStore = create<AgentStore>((set) => ({
   setAgentState: (state) => set({ agentState: state }),
 
   addAgentLog: (source, message, status = 'success') =>
-    set((state) => ({
-      agentLogs: [
-        ...state.agentLogs,
-        {
-          id: Date.now().toString() + Math.random(),
-          source,
-          message,
-          timestamp: new Date(),
-          status: status as AgentLog['status'],
-        },
-      ],
-    })),
+    set((state) => {
+      const last = state.agentLogs[state.agentLogs.length - 1];
+      if (
+        last
+        && last.source === source
+        && last.message === message
+        && last.status === (status as AgentLog['status'])
+      ) {
+        return state;
+      }
+
+      return {
+        agentLogs: [
+          ...state.agentLogs,
+          {
+            id: Date.now().toString() + Math.random(),
+            source,
+            message,
+            timestamp: new Date(),
+            status: status as AgentLog['status'],
+          },
+        ],
+      };
+    }),
 
   setPendingMessage: (message) => set({ pendingMessage: message }),
 

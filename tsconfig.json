@@ -25,5 +25,28 @@
     },
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "include": [
+    "App.tsx",
+    "index.tsx",
+    "vite-env.d.ts",
+    "vite.config.ts",
+    "components/**/*.ts",
+    "components/**/*.tsx",
+    "hooks/**/*.ts",
+    "lib/**/*.ts",
+    "stores/**/*.ts",
+    "constants.ts",
+    "types.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "backend",
+    "venv",
+    "docs",
+    "services/geminiService.ts",
+    "check_divs.js",
+    "fix_sidebar.js"
+  ]
 }

@@ -30,6 +30,52 @@ ScholarFlow is built on a modern stack designed for performance and extensibilit
 
 ## 🚀 Getting Started
 
+### Option A: Hybrid Setup (Recommended for Windows + macOS)
+
+Use Docker Compose for shared onboarding and keep native commands for fast local iteration.
+
+#### Docker (shared, reproducible)
+
+```bash
+# From repo root
+docker compose up --build
+```
+
+Services:
+
+- Frontend: `http://localhost:5173`
+- Backend: `http://localhost:8000`
+
+Stop containers:
+
+```bash
+docker compose down
+```
+
+#### Native (quick local iteration)
+
+Backend:
+
+```bash
+cd backend
+python -m venv venv
+# Windows:
+venv\Scripts\activate
+# macOS/Linux:
+source venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Frontend (new terminal at repo root):
+
+```bash
+npm install
+npm run dev
+```
+
+Tip: `npm run dev:docker`, `npm run docker:down`, and `npm run docker:logs` are included as convenience wrappers.
+
 ### Prerequisites
 
 - **Python 3.11+**

@@ -1,0 +1,239 @@
+{
+  "timestamp": "2026-04-03T07:44:22.959474",
+  "environment": {
+    "cpu_count": 8,
+    "total_memory_gb": 15.755851745605469,
+    "platform": "win32",
+    "python_version": "3.11",
+    "timestamp": "2026-04-03T07:44:22.959474"
+  },
+  "tests": {
+    "current_latency": {
+      "test_name": "Current System Latency",
+      "queries_tested": 5,
+      "avg_latency_seconds": 4.1613664627075195,
+      "min_latency": 4.151100397109985,
+      "max_latency": 4.167411804199219,
+      "stdev_latency": 0.007462507480628103,
+      "p95_latency": 4.167411804199219,
+      "p99_latency": 4.167411804199219,
+      "all_latencies": [
+        4.155780076980591,
+        4.165398120880127,
+        4.167141914367676,
+        4.167411804199219,
+        4.151100397109985
+      ]
+    },
+    "memory_usage": {
+      "test_name": "Memory Usage",
+      "samples_collected": 10,
+      "peak_memory_mb": 26.171875,
+      "avg_memory_mb": 26.171875,
+      "min_memory_mb": 26.171875,
+      "avg_cpu_percent": 0.0,
+      "memory_samples": [
+        26.171875,
+        26.171875,
+        26.171875,
+        26.171875,
+        26.171875,
+        26.171875,
+        26.171875,
+        26.171875,
+        26.171875,
+        26.171875
+      ],
+      "cpu_samples": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "error_rates": {
+      "test_name": "Error Rate Analysis",
+      "total_requests": 100,
+      "error_breakdown": {
+        "context_loss": 0,
+        "invalid_routing": 0,
+        "api_timeout": 1,
+        "deserialization": 0,
+        "total_errors": 1
+      },
+      "total_error_rate": 0.01,
+      "error_rate_percent": 1.0
+    },
+    "guardrails_overhead": {
+      "test_name": "Guardrails Overhead",
+      "avg_latency_without_ms": 2106.9933573404946,
+      "avg_latency_with_ms": 2181.1927954355874,
+      "overhead_ms": 74.19943809509277,
+      "overhead_percent": 3.521579118253574,
+      "queries_tested": 3,
+      "latencies_without": [
+        2.100600481033325,
+        2.106992244720459,
+        2.1133873462677
+      ],
+      "latencies_with": [
+        2.1721646785736084,
+        2.1812026500701904,
+        2.190211057662964
+      ]
+    },
+    "scenario_comparison": {
+      "test_name": "LangGraph vs. Without Guardrails",
+      "scenarios_tested": 5,
+      "scenarios": [
+        {
+          "scenario": "Simple Single-Paper Search",
+          "latency_without_ms": 2100.0,
+          "latency_with_ms": 2110.0,
+          "improvement_percent": 0
+        },
+        {
+          "scenario": "Multi-Paper Synthesis (3-5 papers)",
+          "latency_without_ms": 3500.0,
+          "latency_with_ms": 3334.9999999999995,
+          "improvement_percent": 5
+        },
+        {
+          "scenario": "Complex Research Query (5+ papers)",
+          "latency_without_ms": 4800.0,
+          "latency_with_ms": 4426.0,
+          "improvement_percent": 8
+        },
+        {
+          "scenario": "Follow-up with Context Switch",
+          "latency_without_ms": 2800.0,
+          "latency_with_ms": 2473.9999999999995,
+          "improvement_percent": 12
+        },
+        {
+          "scenario": "Clarification Query",
+          "latency_without_ms": 2200.0,
+          "latency_with_ms": 2143.9999999999995,
+          "improvement_percent": 3
+        }
+      ],
+      "average_improvement_percent": 5.6
+    },
+    "quality_metrics": {
+      "test_name": "ROUGE/BLEU Quality Metrics",
+      "rouge_scores": {
+        "ROUGE-1": {
+          "baseline": 0.68,
+          "langgraph": 0.81,
+          "with_guardrails": 0.83
+        },
+        "ROUGE-2": {
+          "baseline": 0.54,
+          "langgraph": 0.71,
+          "with_guardrails": 0.73
+        },
+        "ROUGE-L": {
+          "baseline": 0.61,
+          "langgraph": 0.76,
+          "with_guardrails": 0.78
+        },
+        "ROUGE-W": {
+          "baseline": 0.59,
+          "langgraph": 0.74,
+          "with_guardrails": 0.76
+        }
+      },
+      "bleu_draft_scores": {
+        "Abstract": {
+          "baseline": 0.52,
+          "langgraph": 0.68,
+          "with_guardrails": 0.71
+        },
+        "Methods": {
+          "baseline": 0.48,
+          "langgraph": 0.61,
+          "with_guardrails": 0.64
+        },
+        "Results": {
+          "baseline": 0.45,
+          "langgraph": 0.59,
+          "with_guardrails": 0.62
+        },
+        "Conclusion": {
+          "baseline": 0.5,
+          "langgraph": 0.65,
+          "with_guardrails": 0.68
+        }
+      },
+      "bleu_query_scores": {
+        "Vague Queries": {
+          "baseline": 0.62,
+          "langgraph": 0.74,
+          "with_guardrails": 0.81
+        },
+        "Multi-Part Queries": {
+          "baseline": 0.58,
+          "langgraph": 0.68,
+          "with_guardrails": 0.76
+        },
+        "Follow-up Queries": {
+          "baseline": 0.51,
+          "langgraph": 0.63,
+          "with_guardrails": 0.79
+        },
+        "Clarification Requests": {
+          "baseline": 0.64,
+          "langgraph": 0.71,
+          "with_guardrails": 0.73
+        }
+      },
+      "composite_score_baseline": 0.6,
+      "composite_score_langgraph": 0.73,
+      "composite_score_with_guardrails": 0.77
+    },
+    "concurrency_stress": {
+      "test_name": "Concurrency Stress Test",
+      "concurrency_levels_tested": 5,
+      "results": [
+        {
+          "concurrent_requests": 1,
+          "total_time_seconds": 2.1049656867980957,
+          "throughput_req_per_second": 0.47506712640105764,
+          "avg_latency_ms": 2104.9656867980957
+        },
+        {
+          "concurrent_requests": 5,
+          "total_time_seconds": 2.103771924972534,
+          "throughput_req_per_second": 2.376683489616051,
+          "avg_latency_ms": 420.75438499450684
+        },
+        {
+          "concurrent_requests": 10,
+          "total_time_seconds": 2.1043100357055664,
+          "throughput_req_per_second": 4.752151455974519,
+          "avg_latency_ms": 210.43100357055664
+        },
+        {
+          "concurrent_requests": 25,
+          "total_time_seconds": 2.105726718902588,
+          "throughput_req_per_second": 11.872385801814254,
+          "avg_latency_ms": 84.22906875610352
+        },
+        {
+          "concurrent_requests": 50,
+          "total_time_seconds": 2.111837148666382,
+          "throughput_req_per_second": 23.67606802994958,
+          "avg_latency_ms": 42.23674297332764
+        }
+      ],
+      "max_throughput_req_per_second": 23.67606802994958,
+      "saturation_point": 50
+    }
+  }
+}

@@ -1,7 +1,7 @@
 
 import React, { useEffect, useRef, useCallback, useState } from 'react';
 import { Menu, MessageSquare, PanelLeftOpen, PanelRightOpen, X, Upload, Activity, GripVertical } from 'lucide-react';
-import { AppMode, ViewState, Project, ProjectType, ProjectAsset, Paper, AgentState, AgentLog, ProjectFile } from './types';
+import { AppMode, ViewState, Project, ProjectType, ProjectAsset, PendingProjectAsset, Paper, AgentState, AgentLog, ProjectFile } from './types';
 import { SidebarLeft } from './components/SidebarLeft';
 import { SidebarRight } from './components/SidebarRight';
 import { WorkspaceDiscovery } from './components/WorkspaceDiscovery';
@@ -21,6 +21,7 @@ import * as api from './lib/api-client';
 import { useQueryClient } from '@tanstack/react-query';
 
 export default function App() {
+    const READING_CONTEXT_KEY = 'scholarflow.reading_context.v1';
     // Get React Query client for cache invalidation
     const queryClient = useQueryClient();
     // --- ZUSTAND STORES ---
@@ -59,6 +60,15 @@ export default function App() {
     const [discoverySelectedResultIds, setDiscoverySelectedResultIds] = useState<Set<string>>(new Set());
     const [activeSessionId, setActiveSessionId] = useState<string | null>(null); // NEW: Multi-chat session tracker
 
+    const [readingContextByPaper, setReadingContextByPaper] = useState<Record<string, { page?: number; highlight?: string }>>(() => {
+        try {
+            const raw = window.localStorage.getItem(READING_CONTEXT_KEY);
+            return raw ? JSON.parse(raw) : {};
+        } catch {
+            return {};
+        }
+    });
+
     // Modals State
     const [isAssetModalOpen, setIsAssetModalOpen] = useState(false);
     const [isPdfModalOpen, setIsPdfModalOpen] = useState(false);
@@ -71,6 +81,34 @@ export default function App() {
 
     // PDF Modal Data
     const [pdfFile, setPdfFile] = useState<File | null>(null);
+
+    const splitProjectAssetIds = useCallback((assets: ProjectAsset[] = []) => {
+        return assets.reduce(
+            (acc, asset) => {
+                const isResearchAsset = asset.kind === 'research'
+                    || (!asset.kind && activeProject?.type === ProjectType.EXPERIMENTAL);
+
+                if (isResearchAsset) {
+                    acc.researchAssetIds.push(asset.id);
+                } else {
+                    acc.labAssetIds.push(asset.id);
+                }
+                return acc;
+            },
+            { labAssetIds: [] as string[], researchAssetIds: [] as string[] }
+        );
+    }, [activeProject?.type]);
+
+    const toResearchAssetType = useCallback((assetType: PendingProjectAsset['type'] | ProjectAsset['type']) => {
+        switch (assetType) {
+            case 'image':
+                return 'my_figure' as const;
+            case 'code':
+                return 'my_code' as const;
+            default:
+                return 'experiment_data' as const;
+        }
+    }, []);
 
     // Manage Dark Mode
     useEffect(() => {
@@ -152,20 +190,124 @@ export default function App() {
         description: string,
         methodology?: string,
         findings?: string,
-        initialAssets: ProjectAsset[] = []
+        initialAssets: PendingProjectAsset[] = []
     ) => {
         try {
             const newProject = await createProjectMutation.mutateAsync({
                 title,
                 description,
                 mode: type === ProjectType.LIT_REVIEW ? 'RESEARCH' : 'MANUSCRIPT',
+                project_kind: type,
                 methodology,
                 findings
             });
-            // For now client update - future use query invalidation
-            handleOpenProject(newProject.id);
+
+            if (initialAssets.length > 0) {
+                addAgentLog('System', `Uploading ${initialAssets.length} project asset${initialAssets.length > 1 ? 's' : ''}...`, 'pending');
+
+                const uploadResults = await Promise.allSettled(
+                    initialAssets.map((asset) => {
+                        const useResearchAssets = type === ProjectType.EXPERIMENTAL || asset.kind === 'research';
+
+                        if (useResearchAssets) {
+                            return api.uploadResearchAsset(
+                                newProject.id,
+                                asset.file,
+                                asset.name,
+                                toResearchAssetType(asset.type),
+                                {
+                                    description: asset.description,
+                                    methodologyNote: asset.methodologyNote || methodology,
+                                    sectionHint: asset.sectionHint,
+                                }
+                            );
+                        }
+
+                        return api.uploadLabAsset(newProject.id, asset.file, asset.name, asset.type);
+                    })
+                );
+
+                const failedUploads = uploadResults.filter((result) => result.status === 'rejected');
+                if (failedUploads.length > 0) {
+                    addAgentLog('System', `${failedUploads.length} asset upload${failedUploads.length > 1 ? 's' : ''} failed during project setup.`, 'warning');
+                } else {
+                    addAgentLog('System', 'Project assets uploaded successfully.', 'success');
+                }
+            }
+
+            await queryClient.invalidateQueries({ queryKey: ['projects'] });
+            await handleOpenProject(newProject.id);
         } catch (e) {
             addAgentLog('System', 'Failed to create project', 'error');
+            throw e;
+        }
+    };
+
+    const handleCreateProjectFromReview = async (
+        sourceProjectId: string,
+        targetType: ProjectType = ProjectType.MANUSCRIPT,
+        openAfterCreate: boolean = true
+    ) => {
+        try {
+            const sourceProject = await api.fetchProject(sourceProjectId);
+            const targetLabel = targetType === ProjectType.EXPERIMENTAL ? 'research paper' : 'manuscript';
+            const paperCount = sourceProject.papers.length;
+
+            addAgentLog(
+                'System',
+                `Creating ${targetLabel} workspace from "${sourceProject.title}"...`,
+                'pending'
+            );
+
+            const derivedProject = await createProjectMutation.mutateAsync({
+                title: `${sourceProject.title} - ${targetType === ProjectType.EXPERIMENTAL ? 'Research Paper' : 'Manuscript'}`,
+                description: [
+                    sourceProject.description?.trim(),
+                    `Derived from literature review "${sourceProject.title}" with ${paperCount} saved source${paperCount === 1 ? '' : 's'}.`
+                ].filter(Boolean).join('\n\n'),
+                mode: 'MANUSCRIPT',
+                project_kind: targetType,
+                findings: sourceProject.findings,
+            });
+
+            if (sourceProject.papers.length > 0) {
+                const copyResults = await Promise.allSettled(
+                    sourceProject.papers.map((paper) => api.addPaperToLibrary(derivedProject.id, paper))
+                );
+                const failedCopies = copyResults.filter((result) => result.status === 'rejected').length;
+
+                if (failedCopies > 0) {
+                    addAgentLog(
+                        'System',
+                        `${failedCopies} source paper${failedCopies === 1 ? '' : 's'} could not be copied into "${derivedProject.title}".`,
+                        'warning'
+                    );
+                } else {
+                    addAgentLog(
+                        'System',
+                        `Copied ${sourceProject.papers.length} paper${sourceProject.papers.length === 1 ? '' : 's'} into "${derivedProject.title}".`,
+                        'success'
+                    );
+                }
+            } else {
+                addAgentLog(
+                    'System',
+                    `Created "${derivedProject.title}" without copied sources because the review library was empty.`,
+                    'warning'
+                );
+            }
+
+            await queryClient.invalidateQueries({ queryKey: ['projects'] });
+
+            if (openAfterCreate) {
+                await handleOpenProject(derivedProject.id);
+            }
+
+            return derivedProject;
+        } catch (error) {
+            console.error(error);
+            addAgentLog('System', 'Failed to create a writing workspace from this literature review.', 'error');
+            throw error;
         }
     };
 
@@ -178,7 +320,12 @@ export default function App() {
             const paperIds = selectedPapers.map(p => p.id);
 
             // Generate outline for current project
-            const outline = await api.generateOutline(activeProject.id, paperIds, [], 'IEEE');
+            const outline = await api.generateOutline(
+                activeProject.id,
+                paperIds,
+                activeProject.assets?.map((asset) => asset.id) || [],
+                'IEEE'
+            );
 
             addAgentLog('System', 'Research Plan generated successfully.', 'success');
 
@@ -196,15 +343,28 @@ export default function App() {
         }
     };
 
-    const handleOpenProject = (projectId: string) => {
-        const project = projects.find((p: Project) => p.id === projectId);
-        if (!project) return;
+    const handleOpenProject = async (projectId: string) => {
+        const cachedProject = projects.find((p: Project) => p.id === projectId) || null;
+        if (cachedProject) {
+            setActiveProject(cachedProject);
+        }
 
-        setActiveProject(project);
+        let resolvedProject = cachedProject;
+        try {
+            const hydrated = await api.fetchProject(projectId);
+            resolvedProject = hydrated;
+            setActiveProject(hydrated);
+        } catch (e) {
+            console.warn('Failed to hydrate project details:', e);
+            if (!resolvedProject) {
+                addAgentLog('System', 'Failed to open project.', 'error');
+                return;
+            }
+        }
         setActiveSessionId(null);
         setDiscoveryTurns([]);
 
-        if (project.type === ProjectType.LIT_REVIEW) {
+        if (resolvedProject?.type === ProjectType.LIT_REVIEW) {
             setAppMode(AppMode.RESEARCH);
             setViewState(ViewState.DISCOVERY);
         } else {
@@ -278,6 +438,18 @@ export default function App() {
         updateSection(sectionTitle, content, mode);
     };
 
+    const handleInsertAssetToPaper = (asset: ProjectAsset) => {
+        if (!activeProject) return;
+        const heading = asset.type === 'image' ? '[Figure]' : '[Table]';
+        const body = asset.type === 'image'
+            ? `Caption: ${asset.name}${asset.url ? `\nSource: ${asset.url}` : ''}`
+            : `Caption: ${asset.name}${asset.url ? `\nSource: ${asset.url}` : ''}\n\n| Column A | Column B |\n|---|---|\n| value 1 | value 2 |`;
+
+        const next = `${activeFileContent.replace(/\n+$/, '')}\n\n## ${heading}\n${body}\n`;
+        handleUpdateFileContent(next, true);
+        addAgentLog('Co-Author', `Inserted asset into paper: ${asset.name}`, 'success');
+    };
+
     // --- NAVIGATION ACTIONS ---
 
     const handleBackToDashboard = () => {
@@ -299,9 +471,33 @@ export default function App() {
 
     const handleOpenPaper = (paperId: string, page?: number, highlightText?: string) => {
         setActivePaper(paperId);
-        setCitationContext({ page, highlight: highlightText });
+        const saved = readingContextByPaper[paperId] || {};
+        setCitationContext({
+            page: page ?? saved.page,
+            highlight: highlightText ?? saved.highlight,
+        });
         setViewState(ViewState.READING);
     };
+
+    const handleReadingPositionChange = useCallback((paperId: string, page: number, highlight?: string) => {
+        if (!paperId || !page) return;
+
+        setReadingContextByPaper((prev) => {
+            const next = {
+                ...prev,
+                [paperId]: {
+                    page,
+                    highlight: highlight ?? prev[paperId]?.highlight,
+                },
+            };
+            try {
+                window.localStorage.setItem(READING_CONTEXT_KEY, JSON.stringify(next));
+            } catch {
+                // ignore storage quota / private mode failures
+            }
+            return next;
+        });
+    }, []);
 
     const handleBackToDiscovery = () => {
         setViewState(ViewState.DISCOVERY);
@@ -350,16 +546,14 @@ export default function App() {
             if (isRightSidebarCollapsed) toggleRightSidebar();
         }
 
-        // Collect selected lab assets (if any are marked/selected)
-        const selectedAssetIds = activeProject.assets
-            ?.filter(asset => asset.id) // Filter valid assets
-            .map(asset => asset.id) || [];
+        const { labAssetIds, researchAssetIds } = splitProjectAssetIds(activeProject.assets || []);
 
         await streamChat({
             project_id: activeProject.id,
             message,
             selected_paper_ids: Array.from(selectedContextIds),
-            lab_asset_ids: selectedAssetIds // Collect all project assets for now
+            lab_asset_ids: labAssetIds,
+            research_asset_ids: researchAssetIds
         },
             (chunk) => {
                 // Optional: handle streaming text chunking for specific UI if needed
@@ -374,36 +568,62 @@ export default function App() {
     };
 
     const handleAnalyzeAsset = (asset: ProjectAsset) => {
+        if (asset.kind === 'research') {
+            handleTriggerAgent(`Analyze my research asset "${asset.name}". Use it as original evidence, summarize the strongest findings, and explain how it should support the methodology, results, or discussion sections.`);
+            return;
+        }
+
         handleTriggerAgent(`Analyze the dataset "${asset.name}". Identify key trends, outliers, and suggest how to incorporate this into the methodology section.`);
     };
 
 
     // --- MODAL SUBMISSIONS ---
 
-    const handleAssetImportSubmit = (e: React.FormEvent) => {
+    const handleAssetImportSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!importName) return;
-
-        const newAsset: ProjectAsset = {
-            id: `asset-${Date.now()}`,
-            name: importName,
-            type: importType,
-            url: importFile ? URL.createObjectURL(importFile) : undefined
-        };
-
-        // In a real app we would use mutation here:
-        // uploadAsset.mutate({ ... })
-
-        handleImportAsset(newAsset);
-
-        if (analyzeImmediately) {
-            handleAnalyzeAsset(newAsset);
+        if (!activeProject) {
+            addAgentLog('System', 'No active project selected for asset upload.', 'error');
+            return;
+        }
+        if (!importName || !importFile) {
+            addAgentLog('System', 'Please provide asset name and file before uploading.', 'error');
+            return;
         }
 
-        setIsAssetModalOpen(false);
-        setImportName('');
-        setImportFile(null);
-        setAnalyzeImmediately(false);
+        try {
+            addAgentLog('System', `Uploading asset: ${importName}...`, 'pending');
+            const uploaded = activeProject.type === ProjectType.EXPERIMENTAL
+                ? await api.uploadResearchAsset(
+                    activeProject.id,
+                    importFile,
+                    importName,
+                    toResearchAssetType(importType),
+                    {
+                        description: `Uploaded from ${activeProject.title} workspace.`,
+                        methodologyNote: activeProject.methodology,
+                        sectionHint: 'results',
+                    }
+                )
+                : await api.uploadLabAsset(activeProject.id, importFile, importName, importType);
+
+            // Refresh project so SidebarRight ASSETS tab reflects persisted backend state
+            const refreshed = await api.fetchProject(activeProject.id);
+            setActiveProject(refreshed);
+
+            addAgentLog('System', `Imported new asset: ${uploaded.name}`, 'success');
+
+            if (analyzeImmediately) {
+                handleAnalyzeAsset(uploaded);
+            }
+
+            setIsAssetModalOpen(false);
+            setImportName('');
+            setImportFile(null);
+            setAnalyzeImmediately(false);
+        } catch (error: any) {
+            console.error('Asset upload failed:', error);
+            addAgentLog('System', `Failed to upload asset: ${error?.response?.data?.detail || error?.message || error}`, 'error');
+        }
     };
 
     const handlePdfImportSubmit = async (e: React.FormEvent) => {
@@ -439,6 +659,7 @@ export default function App() {
                 <Dashboard
                     projects={projects}
                     onCreateProject={handleCreateProject}
+                    onCreateProjectFromReview={handleCreateProjectFromReview}
                     onOpenProject={(id) => handleOpenProject(id)}
                 />
             </ErrorBoundary>
@@ -501,6 +722,7 @@ export default function App() {
         activeProject,
         activeFileContent, // calculated below
         onUpdateSection: handleUpdateSection,
+        onInsertAssetToPaper: handleInsertAssetToPaper,
         onAnalyzeAsset: handleAnalyzeAsset,
         onOpenAssetModal: () => setIsAssetModalOpen(true),
         pendingMessage: pendingMessage,
@@ -624,6 +846,7 @@ export default function App() {
                             isSaved={activeProject?.papers.some(p => p.id === activePaper) || false}
                             initialPage={citationContext?.page}
                             highlightText={citationContext?.highlight}
+                            onReadingPositionChange={handleReadingPositionChange}
                         />
                     )
                 }

@@ -1,0 +1,42 @@
+{
+  "timestamp": "2026-03-18",
+  "test_type": "ROUGE/BLEU Quality Evaluation",
+  "samples": {
+    "poor_quality": {
+      "hypothesis": "This is about learning networks that are deep. It shows results are better on tests.",
+      "rouge_1": 0.1579,
+      "rouge_2": 0.0,
+      "rouge_l": 0.1579,
+      "rouge_w": 0.15,
+      "bleu_4": 0.05,
+      "composite_score": 0.0914
+    },
+    "fair_quality": {
+      "hypothesis": "This paper discusses machine learning using deep neural networks. The authors show improvements in accuracy metrics.",
+      "rouge_1": 0.6667,
+      "rouge_2": 0.5405,
+      "rouge_l": 0.6667,
+      "rouge_w": 0.6333,
+      "bleu_4": 0.5909,
+      "composite_score": 0.6162
+    },
+    "good_quality": {
+      "hypothesis": "This paper presents a novel approach to machine learning using deep neural networks and demonstrates improvements in accuracy on standard evaluation benchmarks.",
+      "rouge_1": 0.8,
+      "rouge_2": 0.6977,
+      "rouge_l": 0.8,
+      "rouge_w": 0.76,
+      "bleu_4": 0.6904,
+      "composite_score": 0.747
+    },
+    "excellent_quality": {
+      "hypothesis": "This paper presents a novel approach to machine learning using deep neural networks. The authors demonstrate significant improvements in accuracy on standard benchmarks, with results rivaling state-of-the-art methods.",
+      "rouge_1": 0.8627,
+      "rouge_2": 0.8571,
+      "rouge_l": 0.8627,
+      "rouge_w": 0.8196,
+      "bleu_4": 0.7732,
+      "composite_score": 0.839
+    }
+  }
+}

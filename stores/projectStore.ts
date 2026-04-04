@@ -9,38 +9,30 @@ import type { Project, ProjectFile } from '../types';
 import { EMPTY_MARKDOWN } from '../constants';
 
 interface ProjectStore {
-  // State
   activeProject: Project | null;
-  // Direct paper content — no files[] indirection needed
   paperContent: string;
-  // Keep activeFileId/files for left-sidebar file explorer (non-studio use)
   activeFileId: string;
   selectedContextIds: Set<string>;
   historyStack: string[];
   redoStack: string[];
 
-  // Actions
   setActiveProject: (project: Project | null) => void;
   updateActiveProject: (updates: Partial<Project>) => void;
   setActiveFileId: (id: string) => void;
   toggleContext: (id: string) => void;
   clearContext: () => void;
 
-  // Paper content operations (used by Studio / Co-Author)
   setPaperContent: (content: string) => void;
   updateSection: (sectionTitle: string, content: string, mode: 'append' | 'replace') => void;
 
-  // File operations (used by left sidebar file explorer)
   updateFileContent: (fileId: string, content: string) => void;
   addFile: (file: ProjectFile) => void;
   deleteFile: (fileId: string) => void;
 
-  // History
   pushHistory: (content: string) => void;
   undo: () => string | null;
   redo: () => string | null;
 
-  // Reset
   reset: () => void;
 }
 
@@ -53,14 +45,71 @@ const initialState = {
   redoStack: [],
 };
 
+const normalizeHeading = (value: string) =>
+  value
+    .toLowerCase()
+    .replace(/&/g, 'and')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const HEADING_ALIASES: Record<string, string[]> = {
+  introduction: ['introduction', 'background', 'related work', 'literature review'],
+  methodology: ['methodology', 'methods', 'materials and methods', 'approach', 'proposed method'],
+  results: ['results', 'experiments', 'experimental results', 'evaluation'],
+  discussion: ['discussion', 'analysis', 'interpretation'],
+  conclusion: ['conclusion', 'conclusions', 'future work'],
+  references: ['references', 'bibliography', 'works cited', 'sources'],
+};
+
+const getHeadingCandidates = (sectionTitle: string): string[] => {
+  const normalized = normalizeHeading(sectionTitle);
+  for (const aliases of Object.values(HEADING_ALIASES)) {
+    if (aliases.includes(normalized)) return aliases;
+  }
+  return [normalized];
+};
+
+type HeadingMatch = {
+  headingStart: number;
+  bodyStart: number;
+  nextHeadingStart: number;
+};
+
+const findHeadingRange = (markdown: string, sectionTitle: string): HeadingMatch | null => {
+  const headingRegex = /^(#{2,3})\s+(.+)$/gm;
+  const headings: Array<{ title: string; start: number; end: number }> = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = headingRegex.exec(markdown)) !== null) {
+    headings.push({
+      title: match[2].trim(),
+      start: match.index,
+      end: headingRegex.lastIndex,
+    });
+  }
+
+  if (headings.length === 0) return null;
+
+  const candidates = new Set(getHeadingCandidates(sectionTitle));
+  const index = headings.findIndex((h) => candidates.has(normalizeHeading(h.title)));
+  if (index === -1) return null;
+
+  const current = headings[index];
+  const next = headings[index + 1];
+  return {
+    headingStart: current.start,
+    bodyStart: current.end,
+    nextHeadingStart: next ? next.start : markdown.length,
+  };
+};
+
 export const useProjectStore = create<ProjectStore>((set, get) => ({
   ...initialState,
 
   setActiveProject: (project) =>
     set({
       activeProject: project ?? null,
-      // Reset paper content to empty template when opening a project.
-      // The draft will be loaded from the backend by WorkspaceStudio on mount.
       paperContent: EMPTY_MARKDOWN,
       activeFileId: 'main.md',
       selectedContextIds: new Set(),
@@ -87,39 +136,49 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
 
   clearContext: () => set({ selectedContextIds: new Set() }),
 
-  // ── Direct paper content write ──────────────────────────────────────────
   setPaperContent: (content) => set({ paperContent: content }),
 
-  // ── Update a single ## Section within the paper content ────────────────
   updateSection: (sectionTitle, content, mode) =>
     set((state) => {
       const currentContent = state.paperContent;
-      const escapedTitle = sectionTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const regex = new RegExp(
-        `(## ${escapedTitle}\\n)((?:(?!\\n## )[\\s\\S])*)`,
-        'i'
-      );
-      const match = currentContent.match(regex);
+      const target = findHeadingRange(currentContent, sectionTitle);
+      const incoming = (content || '').trim();
 
       let newContent = currentContent;
-      if (match) {
-        if (mode === 'replace') {
-          newContent = currentContent.replace(regex, `$1${content}\n`);
-        } else {
-          const existing = match[2];
-          if (!existing.trim().endsWith(content.trim())) {
-            newContent = currentContent.replace(regex, `$1$2\n${content}\n`);
-          }
-        }
+
+      if (target) {
+        const existingBody = currentContent
+          .slice(target.bodyStart, target.nextHeadingStart)
+          .replace(/^\n+|\n+$/g, '');
+
+        const replacementBody = mode === 'replace'
+          ? incoming
+          : (existingBody.trim().endsWith(incoming)
+              ? existingBody
+              : `${existingBody}${existingBody ? '\n\n' : ''}${incoming}`);
+
+        newContent =
+          currentContent.slice(0, target.bodyStart)
+          + `\n${replacementBody}\n\n`
+          + currentContent.slice(target.nextHeadingStart).replace(/^\n+/, '');
       } else {
-        // Section not found — append it
-        newContent = currentContent + `\n\n## ${sectionTitle}\n${content}`;
+        const referencesTarget = findHeadingRange(currentContent, 'references');
+        const isReferencesUpdate = getHeadingCandidates(sectionTitle).includes('references');
+        const insertBlock = `## ${sectionTitle}\n${incoming}\n\n`;
+
+        if (referencesTarget && !isReferencesUpdate) {
+          newContent =
+            currentContent.slice(0, referencesTarget.headingStart).replace(/\n+$/, '\n\n')
+            + insertBlock
+            + currentContent.slice(referencesTarget.headingStart).replace(/^\n+/, '');
+        } else {
+          newContent = currentContent.replace(/\n+$/, '\n\n') + insertBlock;
+        }
       }
 
       return { paperContent: newContent };
     }),
 
-  // ── File operations (left-sidebar file explorer, non-studio) ────────────
   updateFileContent: (fileId, content) =>
     set((state) => {
       if (!state.activeProject) return state;
@@ -152,7 +211,6 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       };
     }),
 
-  // ── History (undo/redo operates on paperContent) ────────────────────────
   pushHistory: (content) =>
     set((state) => ({
       historyStack: [...state.historyStack, content].slice(-50),

@@ -8,6 +8,24 @@ import type { ChatStreamPayload } from '../lib/api-client';
 import { useAgentStore } from '../stores/agentStore';
 import { AgentState } from '../types';
 
+function dedupeParagraphs(text: string): string {
+  const chunks = text
+    .split(/\n\s*\n/)
+    .map((c) => c.trim())
+    .filter(Boolean);
+
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const chunk of chunks) {
+    const fingerprint = chunk.replace(/\s+/g, ' ').trim().toLowerCase();
+    if (seen.has(fingerprint)) continue;
+    seen.add(fingerprint);
+    unique.push(chunk);
+  }
+
+  return unique.join('\n\n');
+}
+
 export function useStreamingChat() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -30,6 +48,7 @@ export function useStreamingChat() {
 
       let accumulatedText = '';
       let hasReceivedNarration = false;
+      let completed = false;
 
       try {
         for await (const event of streamChatWorkflow(payload)) {
@@ -86,7 +105,11 @@ export function useStreamingChat() {
                // @ts-ignore - phase property from backend
                onStatusUpdate(event.phase, event.message);
              }
-           } else if (event.type === 'complete') {
+          } else if (event.type === 'complete') {
+            if (completed) {
+              continue;
+            }
+            completed = true;
             setAgentState(AgentState.IDLE);
             
             // Check for structured answer from Mock Backend
@@ -108,7 +131,7 @@ export function useStreamingChat() {
                 if (onComplete) onComplete(md);
             } else {
                 // Standard Text Mode
-                if (onComplete) onComplete(accumulatedText);
+              if (onComplete) onComplete(dedupeParagraphs(accumulatedText));
             }
 
           } else if (event.type === 'error') {
@@ -173,6 +196,15 @@ export function useStreamingDraft() {
         for await (const event of streamSectionDraft(payload)) {
           if (event.type === 'start') {
             addAgentLog('Writer', event.message || 'Starting draft...', 'pending');
+          } else if (event.type === 'log' && event.data) {
+            addAgentLog(
+              // @ts-ignore - streamed reviewer logs use backend-provided source names
+              event.data.source || 'Reviewer',
+              // @ts-ignore - streamed reviewer logs include message/status payloads
+              event.data.message || '',
+              // @ts-ignore
+              event.data.status || 'info'
+            );
           } else if (event.type === 'text_chunk' && event.data) {
             // Add chunk words to buffer for word-by-word rendering
             const words = splitIntoWords(event.data);

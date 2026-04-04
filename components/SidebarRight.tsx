@@ -1,11 +1,11 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { AppMode, AgentState, AgentLog, Project, ProjectAsset, OutlineSection, ViewState, LibraryPage } from '../types';
-import { Activity, X, PanelLeftClose, PanelRightClose, Terminal, Cpu, Zap, Loader2, FileImage, Table, Wand2, Database, Check, RefreshCw, ChevronDown, ChevronRight, MessageSquare, Sparkles, Eraser, PlayCircle, PenTool, BookOpen, Library, Quote, PlusCircle, Upload } from 'lucide-react';
+import { AppMode, AgentState, AgentLog, Project, ProjectAsset, ProjectType, OutlineSection, ViewState, LibraryPage } from '../types';
+import { Activity, X, PanelLeftClose, PanelRightClose, Terminal, Cpu, Zap, Loader2, FileImage, Table, Wand2, Database, Check, RefreshCw, ChevronDown, ChevronRight, MessageSquare, Sparkles, Eraser, PlayCircle, PenTool, BookOpen, Library, Quote, PlusCircle, Upload, Send } from 'lucide-react';
 import { AgentAvatar } from './AgentAvatar';
 // import { MOCK_PAPERS } from '../constants'; (Removed)
 import Markdown from 'react-markdown';
 import { useStreamingChat, useStreamingDraft } from '../hooks/useStreaming';
-import { generateOutline, fetchLibraryPage, saveDraft } from '../lib/api-client';
+import { generateOutline, fetchLibraryPage, loadDraft, saveDraft } from '../lib/api-client';
 
 interface SidebarRightProps {
     appMode: AppMode;
@@ -23,6 +23,7 @@ interface SidebarRightProps {
     activeProject?: Project | null;
     activeFileContent?: string;
     onUpdateSection?: (sectionTitle: string, content: string, mode: 'append' | 'replace') => void;
+    onInsertAssetToPaper?: (asset: ProjectAsset) => void;
     onAnalyzeAsset?: (asset: ProjectAsset) => void;
     onOpenAssetModal?: () => void;
     pendingMessage?: string | null;
@@ -46,6 +47,7 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
     activeProject,
     activeFileContent = '',
     onUpdateSection,
+    onInsertAssetToPaper,
     onAnalyzeAsset,
     onOpenAssetModal,
     pendingMessage,
@@ -85,6 +87,7 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
     const [draftingAssetIds, setDraftingAssetIds] = useState<Set<string>>(new Set());
     const [assetPromptSectionId, setAssetPromptSectionId] = useState<string | null>(null);
     const [isAutoWriting, setIsAutoWriting] = useState(false);
+    const [allowBlankDrafting, setAllowBlankDrafting] = useState(false);
 
     // Rewrite/Review State (Integrated into Plan Items)
     const [expandedSectionId, setExpandedSectionId] = useState<string | null>(null);
@@ -137,69 +140,120 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
         }
     }, [isStudio]);
 
-    // Load saved outline on mount
+    const normalizeOutlineSections = (sections?: any[] | null): OutlineSection[] => {
+        return (sections || []).map((section, index) => ({
+            id: section.id || `section-${Date.now()}-${index}`,
+            title: section.title || 'Section',
+            description: section.description || '',
+            status: section.status || 'pending',
+            relevantPaperIds: section.relevantPaperIds || section.relevant_paper_ids || [],
+            recommendedAssetTypes: section.recommendedAssetTypes || section.recommended_asset_types || []
+        }));
+    };
+
+    const splitDraftingAssetIds = (assetIds: string[]) => {
+        const selectedAssets = (activeProject?.assets || []).filter(asset => assetIds.includes(asset.id));
+        return selectedAssets.reduce(
+            (acc, asset) => {
+                const isResearchAsset = asset.kind === 'research'
+                    || (!asset.kind && activeProject?.type === ProjectType.EXPERIMENTAL);
+
+                if (isResearchAsset) {
+                    acc.researchAssetIds.push(asset.id);
+                } else {
+                    acc.labAssetIds.push(asset.id);
+                }
+                return acc;
+            },
+            { labAssetIds: [] as string[], researchAssetIds: [] as string[] }
+        );
+    };
+
+    const getGroundingState = (section?: OutlineSection) => {
+        const paperIds = section?.relevantPaperIds?.length
+            ? section.relevantPaperIds
+            : selectedContextIds.size > 0
+                ? Array.from(selectedContextIds)
+                : (activeProject?.papers || []).map(paper => paper.id);
+
+        const assetIds = draftingAssetIds.size > 0
+            ? Array.from(draftingAssetIds)
+            : (activeProject?.assets || []).map(asset => asset.id);
+
+        return {
+            paperIds,
+            assetIds,
+            hasGrounding: paperIds.length > 0 || assetIds.length > 0,
+            hasPaperContext: paperIds.length > 0,
+        };
+    };
+
+    const reportGroundingRequired = () => {
+        addAgentLog?.(
+            'Co-Author',
+            'Add papers or research assets before generating grounded content. Or enable Blank Draft Mode to continue without evidence.',
+            'warning'
+        );
+    };
+
+    // Load saved outline from backend draft state
     useEffect(() => {
-        if (activeProject?.id && isStudio) {
-            const savedOutline = localStorage.getItem(`outline_${activeProject.id}`);
-            if (savedOutline) {
-                try {
-                    const parsed = JSON.parse(savedOutline);
-                    setOutline(parsed);
-                    if (addAgentLog) addAgentLog('Co-Author', 'Loaded saved plan', 'success');
-                } catch (e) {
-                    console.error('Failed to load saved outline:', e);
-                }
-            }
-            
-            // Load saved section content
-            const savedContent = localStorage.getItem(`section_content_${activeProject.id}`);
-            if (savedContent) {
-                try {
-                    const parsed = JSON.parse(savedContent);
-                    setSectionContent(new Map(Object.entries(parsed)));
-                } catch (e) {
-                    console.error('Failed to load saved content:', e);
-                }
-            }
+        if (!activeProject?.id || !isStudio) {
+            setOutline([]);
+            setSectionContent(new Map());
+            return;
         }
+
+        let isCancelled = false;
+        setSectionContent(new Map());
+
+        loadDraft(activeProject.id)
+            .then((draft) => {
+                if (isCancelled) return;
+
+                const loadedOutline = normalizeOutlineSections(draft.outline);
+                setOutline(loadedOutline);
+
+                if (loadedOutline.length > 0 && addAgentLog) {
+                    addAgentLog('Co-Author', 'Loaded saved plan', 'success');
+                }
+            })
+            .catch((error) => {
+                if (isCancelled) return;
+                console.error('Failed to load saved outline:', error);
+                setOutline([]);
+            });
+
+        return () => {
+            isCancelled = true;
+        };
     }, [activeProject?.id, isStudio]);
-
-    // Save outline to localStorage when it changes
-    useEffect(() => {
-        if (activeProject?.id && outline.length > 0) {
-            localStorage.setItem(`outline_${activeProject.id}`, JSON.stringify(outline));
-        }
-    }, [activeProject?.id, outline]);
-
-    // Save section content to localStorage when it changes
-    useEffect(() => {
-        if (activeProject?.id && sectionContent.size > 0) {
-            const obj = Object.fromEntries(sectionContent);
-            localStorage.setItem(`section_content_${activeProject.id}`, JSON.stringify(obj));
-        }
-    }, [activeProject?.id, sectionContent]);
 
     // Sync Plan with Editor Content
     // This ensures that if a user manually adds a header, it shows up in the plan,
     // AND it detects which plan items have been written.
     useEffect(() => {
         if (activeTab === 'PLAN' && activeFileContent) {
-            const regex = /^## (.*)$/gm;
-            const foundHeaders: string[] = [];
-            let match;
-            while ((match = regex.exec(activeFileContent)) !== null) {
-                foundHeaders.push(match[1].trim());
+            const headingRegex = /^(#{2,3})\s+(.+)$/gm;
+            const headings: Array<{ title: string; start: number; end: number }> = [];
+            let match: RegExpExecArray | null;
+            while ((match = headingRegex.exec(activeFileContent)) !== null) {
+                headings.push({ title: match[2].trim(), start: match.index, end: headingRegex.lastIndex });
             }
 
             setOutline(prevOutline => {
-                // 1. Mark existing outline items as completed if header found
                 const updated = prevOutline.map(item => {
-                    const isPresent = foundHeaders.some(h => h.toLowerCase() === item.title.toLowerCase());
-                    return isPresent ? { ...item, status: 'completed' as const } : item;
+                    const idx = headings.findIndex(h => h.title.toLowerCase() === item.title.toLowerCase());
+                    if (idx === -1) return item;
+
+                    const current = headings[idx];
+                    const next = headings[idx + 1];
+                    const sectionBody = activeFileContent.slice(current.end, next ? next.start : activeFileContent.length).trim();
+                    return sectionBody
+                        ? { ...item, status: 'completed' as const }
+                        : { ...item, status: item.status === 'completed' ? 'pending' as const : item.status };
                 });
 
-                // 2. (Optional) Add manual headers to outline if not present?
-                // For now, we keeps it simple: Plan drives the bus.
                 return updated;
             });
         }
@@ -221,6 +275,7 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
     // Reset library pagination on project change
     useEffect(() => {
         setLibraryPageIndex(1);
+        setAllowBlankDrafting(false);
     }, [activeProject?.id]);
 
     // Auto-save outline when it changes
@@ -288,16 +343,18 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
                     ? Array.from(selectedContextIds)
                     : (activeProject.papers || []).map(p => p.id);
 
-                // Use selected assets if any
+                // Use explicitly selected assets, or all project assets by default.
                 const assetIds = draftingAssetIds.size > 0
                     ? Array.from(draftingAssetIds)
-                    : [];
+                    : (activeProject.assets || []).map(asset => asset.id);
+                const { labAssetIds, researchAssetIds } = splitDraftingAssetIds(assetIds);
 
                 await streamChat({
                     project_id: activeProject.id,
                     message: text,
                     selected_paper_ids: paperIds,
-                    lab_asset_ids: assetIds
+                    lab_asset_ids: labAssetIds,
+                    research_asset_ids: researchAssetIds
                 },
                     undefined, // onTextChunk
                     (fullText) => {
@@ -325,7 +382,8 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
                     project_id: activeProject.id,
                     message: text,
                     selected_paper_ids: [activePaper],
-                    lab_asset_ids: []
+                    lab_asset_ids: [],
+                    research_asset_ids: []
                 },
                     undefined,  // onTextChunk
                     (fullText) => {
@@ -343,8 +401,19 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
 
     const handleGenerateOutline = async () => {
         if (!activeProject) return;
+        const groundingState = getGroundingState();
+        if (!groundingState.hasGrounding && !allowBlankDrafting) {
+            reportGroundingRequired();
+            return;
+        }
         setIsGeneratingOutline(true);
-        if (addAgentLog) addAgentLog('Co-Author', 'Generating research plan from selected papers...');
+        if (addAgentLog) addAgentLog(
+            'Co-Author',
+            groundingState.hasGrounding
+                ? 'Generating research plan from selected papers and assets...'
+                : 'Blank Draft Mode enabled. Generating an ungrounded paper plan...',
+            groundingState.hasGrounding ? 'pending' : 'warning'
+        );
 
         try {
             // Call the proper planner API endpoint
@@ -357,21 +426,8 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
                 'IEEE'
             );
 
-            // Validate and set outline
-            const validated = sections.map((s, i) => ({
-                ...s,
-                id: s.id || `section-${Date.now()}-${i}`,
-                status: s.status || ('pending' as const),
-                relevantPaperIds: s.relevantPaperIds || [],
-                recommendedAssetTypes: s.recommendedAssetTypes || []
-            }));
-
+            const validated = normalizeOutlineSections(sections);
             setOutline(validated);
-            
-            // Save to localStorage
-            if (activeProject?.id) {
-                localStorage.setItem(`outline_${activeProject.id}`, JSON.stringify(validated));
-            }
             
             if (addAgentLog) {
                 addAgentLog('Co-Author', `✓ Generated ${validated.length} sections`, 'success');
@@ -391,6 +447,11 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
         // For single drafts, prevent concurrent execution unless in parallel mode
         if (!isParallel && draftingSectionId) return;
         if (!onUpdateSection || !activeProject) return;
+        const groundingState = getGroundingState(section);
+        if (!groundingState.hasGrounding && !allowBlankDrafting) {
+            reportGroundingRequired();
+            return;
+        }
         
         // Update tracking state
         if (!isParallel) {
@@ -401,19 +462,44 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
         setAssetPromptSectionId(null);
         if (addAgentLog) addAgentLog('Co-Author', `Drafting: ${section.title}...`, 'pending');
 
-        // Collect selected assets
-        const selectedAssetIds = Array.from(draftingAssetIds);
+        const fallbackPaperIds = section.relevantPaperIds.length > 0
+            ? section.relevantPaperIds
+            : selectedContextIds.size > 0
+                ? Array.from(selectedContextIds)
+                : activeProject.papers.map(paper => paper.id);
+
+        const selectedAssetIds = draftingAssetIds.size > 0
+            ? Array.from(draftingAssetIds)
+            : (activeProject.assets || []).map(asset => asset.id);
+        const { labAssetIds, researchAssetIds } = splitDraftingAssetIds(selectedAssetIds);
+        const shouldUseCitations = fallbackPaperIds.length > 0;
 
         try {
+            if (!isParallel) {
+                ensurePaperStructure(outline);
+            }
             setOutline(prev => prev.map(s => s.id === section.id ? { ...s, status: 'drafting' } : s));
+
+            if (normalizeHeading(section.title) === 'references') {
+                const bibliography = buildBibliography([section]);
+                if (bibliography) {
+                    onUpdateSection('References', bibliography, 'replace');
+                    setSectionContent(prev => new Map(prev).set(section.id, bibliography));
+                }
+                setOutline(prev => prev.map(s => s.id === section.id ? { ...s, status: 'completed' } : s));
+                if (addAgentLog) addAgentLog('Co-Author', `Completed "${section.title}" from selected sources`, 'success');
+                return;
+            }
 
             let finalContent = '';
 
             await streamDraft({
                 project_id: activeProject.id,
-                message: `Draft section: ${section.title}. Description: ${section.description}. IMPORTANT: Do NOT include a References or Bibliography section. Use only inline citation numbers like [1], [2] in the text where needed.`,
-                selected_paper_ids: section.relevantPaperIds,
-                lab_asset_ids: selectedAssetIds
+                message: `Write the ${section.title} section for this research paper. Goal: ${section.description}. Use the selected papers as literature support and the selected research assets as original evidence when relevant. Do not include a References or Bibliography section inside this section. ${shouldUseCitations ? 'Use inline citation numbers like [1], [2] when needed.' : 'Do not include or invent citations because no papers were provided for grounding.'}`,
+                selected_paper_ids: fallbackPaperIds,
+                lab_asset_ids: labAssetIds,
+                research_asset_ids: researchAssetIds,
+                current_section: section.title
             }, (accumulatedText) => {
                 // Store the accumulated content
                 finalContent = accumulatedText;
@@ -454,10 +540,17 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
 
     const handleAutoWriteAll = async (sectionsOverride?: OutlineSection[]) => {
         if (isAutoWriting) return;
+        const groundingState = getGroundingState();
+        if (!groundingState.hasGrounding && !allowBlankDrafting) {
+            reportGroundingRequired();
+            return;
+        }
         setIsAutoWriting(true);
         if (addAgentLog) addAgentLog('Co-Author', '🚀 Starting parallel drafting of all sections...', 'pending');
 
-        const pendingSections = (sectionsOverride || outline).filter(s => s.status === 'pending');
+        const orderedSections = sectionsOverride || outline;
+        ensurePaperStructure(orderedSections);
+        const pendingSections = orderedSections.filter(s => s.status === 'pending');
 
         // Draft all sections in parallel for maximum speed
         const draftPromises = pendingSections.map(section =>
@@ -467,7 +560,7 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
         await Promise.all(draftPromises);
 
         // Append consolidated bibliography at the end of the paper
-        const bibContent = buildBibliography(sectionsOverride || outline);
+        const bibContent = buildBibliography(orderedSections);
         if (bibContent && onUpdateSection) {
             onUpdateSection('References', bibContent, 'replace');
             if (addAgentLog) addAgentLog('Co-Author', '✓ References section added to end of paper', 'success');
@@ -499,6 +592,7 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
 
     const handleAddSectionToPaper = (section: OutlineSection) => {
         if (!onUpdateSection) return;
+        ensurePaperStructure(outline);
 
         // Primary: use the saved draft content from the sectionContent map
         // Fallback: pull the section directly from the live file content (handles the case
@@ -527,21 +621,84 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
             setDraftingSectionId(null);
             setDraftingSectionIds(new Set());
             setExpandedSectionId(null);
-            localStorage.removeItem(`outline_${activeProject.id}`);
-            localStorage.removeItem(`section_content_${activeProject.id}`);
+            void saveDraft(activeProject.id, [], null).catch(error => {
+                console.error('Failed to clear saved outline:', error);
+            });
             if (addAgentLog) addAgentLog('Co-Author', 'Plan reset', 'info');
         }
     };
 
     // --- REWRITE / CRITIQUE LOGIC ---
 
+    const normalizeHeading = (value: string) =>
+        value
+            .toLowerCase()
+            .replace(/&/g, 'and')
+            .replace(/[^a-z0-9\s]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+    const HEADING_ALIASES: Record<string, string[]> = {
+        introduction: ['introduction', 'background', 'related work', 'literature review'],
+        methodology: ['methodology', 'methods', 'materials and methods', 'approach', 'proposed method'],
+        results: ['results', 'experiments', 'experimental results', 'evaluation'],
+        discussion: ['discussion', 'analysis', 'interpretation'],
+        conclusion: ['conclusion', 'conclusions', 'future work'],
+        references: ['references', 'bibliography', 'works cited', 'sources'],
+    };
+
+    const getHeadingCandidates = (title: string) => {
+        const normalized = normalizeHeading(title);
+        for (const aliases of Object.values(HEADING_ALIASES)) {
+            if (aliases.includes(normalized)) return aliases;
+        }
+        return [normalized];
+    };
+
+    const sectionExistsInPaper = (title: string) => {
+        if (!activeFileContent) return false;
+
+        const headingRegex = /^(#{2,3})\s+(.+)$/gm;
+        const candidates = new Set(getHeadingCandidates(title));
+        let match: RegExpExecArray | null;
+
+        while ((match = headingRegex.exec(activeFileContent)) !== null) {
+            if (candidates.has(normalizeHeading(match[2].trim()))) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+
     const getSectionContent = (title: string) => {
         if (!activeFileContent) return '';
-        // Escape special regex chars in the title, then match everything until the next ## heading
-        const escapedTitle = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const regex = new RegExp(`## ${escapedTitle}\\n((?:(?!\\n## )[\\s\\S])*)`);
-        const match = activeFileContent.match(regex);
-        return match ? match[1].trim() : '';
+
+        const headingRegex = /^(#{2,3})\s+(.+)$/gm;
+        const headings: Array<{ title: string; start: number; end: number }> = [];
+        let m: RegExpExecArray | null;
+        while ((m = headingRegex.exec(activeFileContent)) !== null) {
+            headings.push({ title: m[2].trim(), start: m.index, end: headingRegex.lastIndex });
+        }
+        if (headings.length === 0) return '';
+
+        const candidates = new Set(getHeadingCandidates(title));
+        const idx = headings.findIndex(h => candidates.has(normalizeHeading(h.title)));
+        if (idx === -1) return '';
+
+        const current = headings[idx];
+        const next = headings[idx + 1];
+        const sectionBody = activeFileContent.slice(current.end, next ? next.start : activeFileContent.length);
+        return sectionBody.trim();
+    };
+
+    const ensurePaperStructure = (sectionsToSeed: OutlineSection[]) => {
+        if (!onUpdateSection) return;
+        sectionsToSeed.forEach(section => {
+            if (!sectionExistsInPaper(section.title)) {
+                onUpdateSection(section.title, '', 'replace');
+            }
+        });
     };
 
     // Strip any trailing References/Bibliography block the AI may include despite instructions
@@ -586,13 +743,20 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
         if (addAgentLog) addAgentLog('Co-Author', `Rewriting section: ${section.title}`);
 
         try {
+            const selectedAssetIds = draftingAssetIds.size > 0
+                ? Array.from(draftingAssetIds)
+                : (activeProject.assets || []).map(asset => asset.id);
+            const { labAssetIds, researchAssetIds } = splitDraftingAssetIds(selectedAssetIds);
+
             // Use streamChat for rewrite as it's a "chat" with a specific context
             let accumulated = "";
             await streamChat({
                 project_id: activeProject.id,
                 message: `Rewrite the following text based on this instruction: "${instruction}".\n\nText:\n${content}`,
-                selected_paper_ids: [],
-                lab_asset_ids: []
+                selected_paper_ids: section.relevantPaperIds,
+                lab_asset_ids: labAssetIds,
+                research_asset_ids: researchAssetIds,
+                current_section: section.title
             }, (chunk) => {
                 // Text chunks for streaming rewrite
                 accumulated = chunk;
@@ -624,6 +788,8 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
     const borderClass = position === 'left' ? 'border-r' : 'border-l';
     const bgClass = isStudio ? `bg-black ${borderClass} border-gray-800` : `bg-gray-50 ${borderClass} border-gray-200`;
     const headerClass = isStudio ? 'text-gray-200 border-gray-800' : 'text-gray-800 border-gray-200';
+    const planGroundingState = getGroundingState();
+    const groundingBlocked = !planGroundingState.hasGrounding && !allowBlankDrafting;
 
     return (
         <aside className={`h-full flex flex-col transition-colors duration-500 z-30 shadow-xl ${bgClass}`}>
@@ -699,12 +865,40 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
                                 {/* PLAN & REVIEW VIEW */}
                                 {activeTab === 'PLAN' && (
                                     <div className="space-y-3 pb-4">
+                                        {groundingBlocked && (
+                                            <div className="rounded-lg border border-amber-700/50 bg-amber-950/30 p-3 space-y-2">
+                                                <p className="text-[10px] leading-relaxed text-amber-200">
+                                                    Add papers or research assets before generating grounded content.
+                                                </p>
+                                                <button
+                                                    onClick={() => setAllowBlankDrafting(true)}
+                                                    className="w-full py-2 bg-amber-600 hover:bg-amber-500 text-white rounded text-[10px] font-bold transition-colors"
+                                                >
+                                                    Enable Blank Draft Mode
+                                                </button>
+                                            </div>
+                                        )}
+                                        {!planGroundingState.hasGrounding && allowBlankDrafting && (
+                                            <div className="rounded-lg border border-fuchsia-700/40 bg-fuchsia-950/20 p-3 flex items-center justify-between gap-3">
+                                                <p className="text-[10px] leading-relaxed text-fuchsia-200">
+                                                    Blank Draft Mode is on. Drafts will be ungrounded until you add papers or assets.
+                                                </p>
+                                                <button
+                                                    onClick={() => setAllowBlankDrafting(false)}
+                                                    className="shrink-0 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-white rounded text-[10px] font-bold"
+                                                >
+                                                    Turn Off
+                                                </button>
+                                            </div>
+                                        )}
                                         {outline.length === 0 ? (
                                             <div className="text-center py-6">
                                                 <p className="text-[11px] text-gray-500 mb-4 leading-relaxed px-4">
-                                                    Generate a plan based on your papers and assets to start drafting.
+                                                    {groundingBlocked
+                                                        ? 'Add grounding material first, or enable Blank Draft Mode to generate an ungrounded plan.'
+                                                        : 'Generate a plan based on your papers and assets to start drafting.'}
                                                 </p>
-                                                <button onClick={handleGenerateOutline} disabled={isGeneratingOutline} className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[10px] font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-900/20">
+                                                <button onClick={handleGenerateOutline} disabled={isGeneratingOutline || groundingBlocked} className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[10px] font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-900/20 disabled:opacity-40 disabled:cursor-not-allowed">
                                                     {isGeneratingOutline ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
                                                     Generate Plan
                                                 </button>
@@ -725,7 +919,8 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
                                                         {!isAutoWriting && outline.some(s => s.status === 'pending') && (
                                                             <button
                                                                 onClick={() => handleAutoWriteAll()}
-                                                                className="flex items-center gap-1 text-[10px] font-bold text-indigo-400 hover:text-indigo-300 transition-colors"
+                                                                disabled={groundingBlocked}
+                                                                className="flex items-center gap-1 text-[10px] font-bold text-indigo-400 hover:text-indigo-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                                                             >
                                                                 <PlayCircle className="w-3 h-3" /> Auto-Write All
                                                             </button>
@@ -807,9 +1002,9 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
                                                                         ) : (
                                                                             <button
                                                                                 onClick={() => handleDraftClick(section)}
-                                                                                disabled={(draftingSectionId !== null && draftingSectionId !== section.id) || isAutoWriting}
+                                                                                disabled={(draftingSectionId !== null && draftingSectionId !== section.id) || isAutoWriting || groundingBlocked}
                                                                                 className={`w-full py-1.5 rounded text-[10px] font-bold uppercase tracking-wide flex items-center justify-center gap-2 transition-colors ${isDraftingThis ? 'bg-indigo-900/20 text-indigo-400' : 'bg-[#1e2025] text-gray-400 hover:bg-gray-800 hover:text-white border border-gray-800'
-                                                                                    }`}
+                                                                                    } disabled:opacity-40 disabled:cursor-not-allowed`}
                                                                             >
                                                                                 {isDraftingThis ? <Loader2 className="w-3 h-3 animate-spin" /> : <PenTool className="w-3 h-3" />}
                                                                                 {isDraftingThis ? 'Drafting...' : 'Draft Section'}
@@ -977,9 +1172,26 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
                                                             {asset.type === 'image' ? <FileImage className="w-6 h-6 text-purple-400" /> : <Table className="w-6 h-6 text-emerald-400" />}
                                                         </div>
                                                         <div className="text-[10px] font-bold text-gray-300 truncate">{asset.name}</div>
-                                                        <button className="w-full mt-2 py-1 bg-indigo-900/30 text-indigo-400 hover:bg-indigo-600 hover:text-white rounded text-[9px] font-bold opacity-0 group-hover:opacity-100 transition-opacity">
+                                                        <div className="grid grid-cols-2 gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                            <button
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    onInsertAssetToPaper && onInsertAssetToPaper(asset);
+                                                                }}
+                                                                className="py-1 bg-emerald-900/30 text-emerald-400 hover:bg-emerald-600 hover:text-white rounded text-[9px] font-bold"
+                                                            >
+                                                                Insert
+                                                            </button>
+                                                            <button
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    onAnalyzeAsset && onAnalyzeAsset(asset);
+                                                                }}
+                                                                className="py-1 bg-indigo-900/30 text-indigo-400 hover:bg-indigo-600 hover:text-white rounded text-[9px] font-bold"
+                                                            >
                                                             Analyze
-                                                        </button>
+                                                            </button>
+                                                        </div>
                                                     </div>
                                                 ))}
                                             </div>

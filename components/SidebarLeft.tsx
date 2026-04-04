@@ -85,6 +85,7 @@ export const SidebarLeft: React.FC<SidebarLeftProps> = ({
     // Local State
     const [sessions, setSessions] = useState<ChatSession[]>([]);
     const [sidebarTab, setSidebarTab] = useState<'library' | 'chats'>('library');
+    const [libraryQuery, setLibraryQuery] = useState('');
 
     // Fetch Sessions on mount / project change
     useEffect(() => {
@@ -144,7 +145,7 @@ export const SidebarLeft: React.FC<SidebarLeftProps> = ({
     const [chatInput, setChatInput]       = useState('');
     const chatEndRef = useRef<HTMLDivElement>(null);
 
-    const { streamChat, isStreaming: isChatStreaming } = useStreamingChat(agentState, addAgentLog);
+    const { streamChat, isStreaming: isChatStreaming } = useStreamingChat();
 
     // Seed greeting
     useEffect(() => {
@@ -198,9 +199,25 @@ export const SidebarLeft: React.FC<SidebarLeftProps> = ({
 
     // Derived Assets
     const libraryItems = libraryPage?.items || projectPapers;
+    const normalizedQuery = libraryQuery.trim().toLowerCase();
+    const filteredLibraryItems = libraryItems
+        .filter((paper) => {
+            if (!normalizedQuery) return true;
+            const title = (paper.title || '').toLowerCase();
+            const authors = Array.isArray(paper.authors) ? paper.authors.join(' ').toLowerCase() : '';
+            const year = String(paper.year || '').toLowerCase();
+            return title.includes(normalizedQuery) || authors.includes(normalizedQuery) || year.includes(normalizedQuery);
+        })
+        .sort((a, b) => {
+            const aSelected = selectedContextIds.has(a.id) ? 1 : 0;
+            const bSelected = selectedContextIds.has(b.id) ? 1 : 0;
+            if (aSelected !== bSelected) return bSelected - aSelected;
+            return (b.year || 0) - (a.year || 0);
+        });
+
     const totalPapers = libraryPage?.total ?? projectPapers.length;
     const totalPages = libraryPage?.pages ?? 1;
-    const activePaper = hoveredPaper ? libraryItems.find(p => p.id === hoveredPaper.id) : null;
+    const activePaper = hoveredPaper ? filteredLibraryItems.find(p => p.id === hoveredPaper.id) : null;
     const activePaperSummary = activePaper?.summary || 'No summary available';
 
     // Dynamic Border Class based on position
@@ -359,18 +376,51 @@ export const SidebarLeft: React.FC<SidebarLeftProps> = ({
                                         {selectedContextIds.size > 0 && <span className="text-[10px] bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-full font-bold">{selectedContextIds.size} Active</span>}
                                     </div>
 
+                                    <div className="flex items-center gap-2 mt-2">
+                                        <input
+                                            value={libraryQuery}
+                                            onChange={(e) => setLibraryQuery(e.target.value)}
+                                            placeholder="Search title, author, year..."
+                                            className="flex-1 px-2.5 py-1.5 text-xs rounded-md border border-gray-200 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                                        />
+                                        {libraryQuery && (
+                                            <button
+                                                onClick={() => setLibraryQuery('')}
+                                                className="px-2 py-1.5 text-[10px] font-bold rounded-md border border-gray-200 bg-white hover:bg-gray-50"
+                                            >
+                                                Clear
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    {filteredLibraryItems.length > 0 && (
+                                        <div className="flex items-center justify-between px-1 text-[10px] text-gray-500">
+                                            <span>Showing {filteredLibraryItems.length}</span>
+                                            <button
+                                                onClick={() => {
+                                                    filteredLibraryItems.forEach((paper) => {
+                                                        if (!selectedContextIds.has(paper.id)) onToggleContext(paper.id);
+                                                    });
+                                                }}
+                                                className="font-semibold hover:text-indigo-600"
+                                            >
+                                                Select Visible
+                                            </button>
+                                        </div>
+                                    )}
+
                                     {isLibraryLoading ? (
                                         <div className="border border-gray-200 rounded-xl p-4 text-center mt-2 text-xs text-gray-500">
                                             Loading library...
                                         </div>
-                                    ) : libraryItems.length === 0 ? (
+                                    ) : filteredLibraryItems.length === 0 ? (
                                         <div className="border-2 border-dashed border-gray-200 rounded-xl p-6 text-center mt-2">
                                             <div className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-2"><PlusCircle className="w-4 h-4 text-gray-400" /></div>
-                                            <p className="text-xs text-gray-500 font-medium">Library is empty.</p>
+                                            <p className="text-xs text-gray-500 font-medium">No papers match this filter.</p>
                                         </div>
                                     ) : (
                                         <div className="space-y-2">
-                                            {libraryItems.map(paper => {
+                                            {filteredLibraryItems.map(paper => {
                                                 const isSelected = selectedContextIds.has(paper.id);
                                                 return (
                                                     <div
@@ -392,6 +442,13 @@ export const SidebarLeft: React.FC<SidebarLeftProps> = ({
                                                                 {Array.isArray(paper.authors) && paper.authors.length > 0 ? paper.authors[0] : 'Unknown'} • {paper.year || 'N/A'}
                                                             </div>
                                                         </div>
+                                                        <button
+                                                            onClick={(e) => { e.stopPropagation(); onOpenPaper(paper.id); }}
+                                                            className="px-2 py-1 text-[10px] font-semibold rounded-md border border-gray-200 bg-white hover:bg-gray-50"
+                                                            title="Open PDF"
+                                                        >
+                                                            Open
+                                                        </button>
                                                         <button className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-gray-600"><MoreVertical className="w-3 h-3" /></button>
                                                         {isSelected && <div className="absolute left-0 top-3 bottom-3 w-1 bg-indigo-500 rounded-r-full" />}
                                                     </div>

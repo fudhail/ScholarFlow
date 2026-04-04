@@ -38,12 +38,7 @@ export const MOCK_PAPERS: Paper[] = [
   }
 ];
 
-export const EMPTY_MARKDOWN = `# Project Title
-
-**Authors:**
-Author Name (Affiliation)
-
-`;
+export const EMPTY_MARKDOWN = '';
 
 export const DEFAULT_BIB_FILE = `@article{vaswani2017attention,
   title={Attention is all you need},

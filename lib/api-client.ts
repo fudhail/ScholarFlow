@@ -4,6 +4,7 @@
  */
 
 import axios from 'axios';
+import { ProjectType } from '../types';
 import type { 
   Project, 
   ProjectAsset, 
@@ -36,9 +37,40 @@ export interface ProjectCreatePayload {
   title: string;
   description: string;
   mode: 'RESEARCH' | 'MANUSCRIPT';
+  project_kind?: 'LIT_REVIEW' | 'EXPERIMENTAL' | 'MANUSCRIPT';
   methodology?: string;
   findings?: string;
 }
+
+const apiRootUrl = () => (apiClient.defaults.baseURL || '').replace(/\/api\/v1\/?$/, '');
+
+const toProjectType = (projectKind?: string | null, mode?: string | null): ProjectType => {
+  if (
+    projectKind === ProjectType.LIT_REVIEW
+    || projectKind === ProjectType.EXPERIMENTAL
+    || projectKind === ProjectType.MANUSCRIPT
+  ) {
+    return projectKind as ProjectType;
+  }
+  return mode === 'RESEARCH' ? ProjectType.LIT_REVIEW : ProjectType.MANUSCRIPT;
+};
+
+const mapResearchAssetType = (assetType?: string): ProjectAsset['type'] => {
+  switch (assetType) {
+    case 'my_figure':
+      return 'image';
+    case 'my_code':
+      return 'code';
+    default:
+      return 'data';
+  }
+};
+
+const normalizeAssetUrl = (filePath: string) => {
+  const normalized = filePath.replace(/\\/g, '/');
+  const suffix = normalized.split('uploads/').pop() || '';
+  return `${apiRootUrl()}/uploads/${suffix}`;
+};
 
 export const fetchProjects = async (): Promise<Project[]> => {
   const { data } = await apiClient.get('/projects');
@@ -47,7 +79,7 @@ export const fetchProjects = async (): Promise<Project[]> => {
     id: p.id,
     title: p.title,
     description: p.description,
-    type: p.mode, // Maps 'RESEARCH' | 'MANUSCRIPT'
+    type: toProjectType(p.project_kind, p.mode),
     lastModified: new Date(p.updated_at), // Convert string to Date
     wordCount: 0, // Default as backend doesn't send this yet
     papers: [], // Default
@@ -60,11 +92,21 @@ export const fetchProjects = async (): Promise<Project[]> => {
 
 export const fetchProject = async (id: string): Promise<Project> => {
   const { data } = await apiClient.get(`/projects/${id}`);
+  const [labAssetsResult, researchAssetsResult] = await Promise.allSettled([
+    fetchLabAssets(id),
+    fetchResearchAssets(id)
+  ]);
+
+  const assets: ProjectAsset[] = [
+    ...(labAssetsResult.status === 'fulfilled' ? labAssetsResult.value : []),
+    ...(researchAssetsResult.status === 'fulfilled' ? researchAssetsResult.value : [])
+  ];
+
   return {
     id: data.id,
     title: data.title,
     description: data.description,
-    type: data.mode,
+    type: toProjectType(data.project_kind, data.mode),
     lastModified: new Date(data.updated_at),
     wordCount: 0,
     papers: (data.library_items || []).map((p: any) => ({
@@ -74,12 +116,12 @@ export const fetchProject = async (id: string): Promise<Project> => {
         year: p.year,
         summary: p.abstract || '',
         tags: [],
-        pdfUrl: p.pdf_path 
-            ? `${(apiClient.defaults.baseURL || '').replace(/\/api\/v1\/?$/, '')}/uploads/${p.pdf_path.split(/[/\\]/).pop()}` 
-            : (p.url || (p.arxiv_id ? `https://arxiv.org/pdf/${p.arxiv_id}.pdf` : undefined))
+        pdfUrl: p.pdf_path
+            ? `${(apiClient.defaults.baseURL || '').replace(/\/api\/v1\/?$/, '')}/uploads/${p.pdf_path.split(/[/\\]/).pop()}`
+            : (p.url || (p.arxiv_id ? `${apiClient.defaults.baseURL}/papers/pdf/proxy/${p.arxiv_id}` : undefined))
     })),
     files: [],
-    assets: [],
+    assets,
     methodology: data.methodology,
     findings: data.findings
   };
@@ -106,7 +148,7 @@ export const fetchLibraryPage = async (
       tags: [],
       pdfUrl: p.pdf_path
         ? `${rootUrl}/uploads/${p.pdf_path.split(/[/\\]/).pop()}`
-        : (p.url || (p.arxiv_id ? `https://arxiv.org/pdf/${p.arxiv_id}.pdf` : undefined))
+        : (p.url || (p.arxiv_id ? `${apiClient.defaults.baseURL}/papers/pdf/proxy/${p.arxiv_id}` : undefined))
     })),
     total: data.total || 0,
     page: data.page || page,
@@ -122,7 +164,7 @@ export const createProject = async (payload: ProjectCreatePayload): Promise<Proj
     id: data.id,
     title: data.title,
     description: data.description,
-    type: data.mode,
+    type: toProjectType(data.project_kind, data.mode),
     lastModified: new Date(data.created_at), // Use created_at for new projects
     wordCount: 0,
     papers: [],
@@ -139,7 +181,7 @@ export const generateProject = async (paperIds: string[]): Promise<Project> => {
     id: data.id,
     title: data.title,
     description: data.description,
-    type: data.mode,
+    type: toProjectType(data.project_kind, data.mode),
     lastModified: new Date(data.created_at),
     wordCount: 0,
     papers: [],
@@ -176,33 +218,84 @@ export const uploadLabAsset = async (
   );
 
   // Map backend response to frontend format
-  const normalized = data.file_path.replace(/\\/g, '/');
-  const suffix = normalized.split('uploads/').pop() || '';
-  const rootUrl = (apiClient.defaults.baseURL || '').replace(/\/api\/v1\/?$/, '');
-  
   return {
     id: data.id,
     name: data.name,
     type: data.asset_type,
-    url: `${rootUrl}/uploads/${suffix}`
+    kind: 'lab',
+    url: data.file_path ? normalizeAssetUrl(data.file_path) : undefined,
+    aiDescription: data.ai_description
   };
 };
 
 export const fetchLabAssets = async (projectId: string): Promise<ProjectAsset[]> => {
   const { data } = await apiClient.get<any[]>(`/lab/projects/${projectId}`);
-  
-  const rootUrl = (apiClient.defaults.baseURL || '').replace(/\/api\/v1\/?$/, '');
-  
+
   return data.map(asset => {
-    const normalized = asset.file_path.replace(/\\/g, '/');
-    const suffix = normalized.split('uploads/').pop() || '';
     return {
       id: asset.id,
       name: asset.name,
       type: asset.asset_type,
-      url: `${rootUrl}/uploads/${suffix}`
+      kind: 'lab',
+      url: asset.file_path ? normalizeAssetUrl(asset.file_path) : undefined,
+      aiDescription: asset.ai_description
     };
   });
+};
+
+export const uploadResearchAsset = async (
+  projectId: string,
+  file: File,
+  name: string,
+  assetType: 'experiment_data' | 'my_figure' | 'my_code' | 'my_table' | 'methodology',
+  options?: {
+    description?: string;
+    methodologyNote?: string;
+    sectionHint?: string;
+  }
+): Promise<ProjectAsset> => {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('name', name);
+  formData.append('asset_type', assetType);
+  if (options?.description) formData.append('description', options.description);
+  if (options?.methodologyNote) formData.append('methodology_note', options.methodologyNote);
+  if (options?.sectionHint) formData.append('section_hint', options.sectionHint);
+
+  const { data } = await apiClient.post<any>(
+    `/research/projects/${projectId}/assets/upload`,
+    formData,
+    { headers: { 'Content-Type': 'multipart/form-data' } }
+  );
+
+  return {
+    id: data.id,
+    name: data.name,
+    type: mapResearchAssetType(data.asset_type),
+    kind: 'research',
+    researchAssetType: data.asset_type,
+    description: data.description,
+    methodologyNote: data.methodology_note,
+    sectionHint: data.section_hint,
+    aiDescription: data.ai_analysis,
+    url: data.file_path ? normalizeAssetUrl(data.file_path) : undefined,
+  };
+};
+
+export const fetchResearchAssets = async (projectId: string): Promise<ProjectAsset[]> => {
+  const { data } = await apiClient.get<any[]>(`/research/projects/${projectId}/assets`);
+  return data.map(asset => ({
+    id: asset.id,
+    name: asset.name,
+    type: mapResearchAssetType(asset.asset_type),
+    kind: 'research',
+    researchAssetType: asset.asset_type,
+    description: asset.description,
+    methodologyNote: asset.methodology_note,
+    sectionHint: asset.section_hint,
+    aiDescription: asset.ai_analysis,
+    url: asset.file_path ? normalizeAssetUrl(asset.file_path) : undefined,
+  }));
 };
 
 export const reanalyzeAsset = async (
@@ -237,6 +330,8 @@ export interface ChatStreamPayload {
   message: string;
   selected_paper_ids: string[];
   lab_asset_ids: string[];
+  research_asset_ids?: string[];
+  current_section?: string;
 }
 
 /**
@@ -266,6 +361,7 @@ export async function* streamChatWorkflow(
 
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
+  let buffer = '';
 
   try {
     while (true) {
@@ -273,17 +369,43 @@ export async function* streamChatWorkflow(
       
       if (done) break;
 
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split('\n');
+      buffer += decoder.decode(value, { stream: true });
 
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6));
-            yield data;
-          } catch (e) {
-            console.warn('Failed to parse SSE data:', line);
-          }
+      // SSE events are separated by a blank line.
+      const events = buffer.split('\n\n');
+      buffer = events.pop() || '';
+
+      for (const rawEvent of events) {
+        const dataLines = rawEvent
+          .split('\n')
+          .filter((line) => line.startsWith('data: '))
+          .map((line) => line.slice(6));
+
+        if (!dataLines.length) continue;
+
+        const dataText = dataLines.join('\n');
+        try {
+          const data = JSON.parse(dataText);
+          yield data;
+        } catch (e) {
+          console.warn('Failed to parse SSE data:', dataText);
+        }
+      }
+    }
+
+    // Flush any trailing buffered event
+    if (buffer.trim()) {
+      const dataLines = buffer
+        .split('\n')
+        .filter((line) => line.startsWith('data: '))
+        .map((line) => line.slice(6));
+      if (dataLines.length) {
+        const dataText = dataLines.join('\n');
+        try {
+          const data = JSON.parse(dataText);
+          yield data;
+        } catch {
+          // Ignore trailing partial event
         }
       }
     }
@@ -338,7 +460,7 @@ export const createChatSession = async (projectId: string, title: string): Promi
 export async function* streamSectionDraft(
   payload: ChatStreamPayload
 ): AsyncGenerator<{
-  type: 'start' | 'text_chunk' | 'complete' | 'error';
+  type: 'start' | 'text_chunk' | 'complete' | 'error' | 'log';
   data?: string;
   message?: string;
 }> {
@@ -356,6 +478,7 @@ export async function* streamSectionDraft(
 
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
+  let buffer = '';
 
   try {
     while (true) {
@@ -363,17 +486,39 @@ export async function* streamSectionDraft(
       
       if (done) break;
 
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split('\n');
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split('\n\n');
+      buffer = events.pop() || '';
 
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6));
-            yield data;
-          } catch (e) {
-            console.warn('Failed to parse SSE data:', line);
-          }
+      for (const rawEvent of events) {
+        const dataLines = rawEvent
+          .split('\n')
+          .filter((line) => line.startsWith('data: '))
+          .map((line) => line.slice(6));
+        if (!dataLines.length) continue;
+
+        const dataText = dataLines.join('\n');
+        try {
+          const data = JSON.parse(dataText);
+          yield data;
+        } catch (e) {
+          console.warn('Failed to parse SSE data:', dataText);
+        }
+      }
+    }
+
+    if (buffer.trim()) {
+      const dataLines = buffer
+        .split('\n')
+        .filter((line) => line.startsWith('data: '))
+        .map((line) => line.slice(6));
+      if (dataLines.length) {
+        const dataText = dataLines.join('\n');
+        try {
+          const data = JSON.parse(dataText);
+          yield data;
+        } catch {
+          // Ignore trailing partial event
         }
       }
     }
@@ -430,7 +575,14 @@ export const generateOutline = async (
       timeout: 120000
     });
     
-    return data.sections || [];
+    return (data.sections || []).map((section: any, index: number) => ({
+      id: section.id || `section-${Date.now()}-${index}`,
+      title: section.title || 'Section',
+      description: section.description || '',
+      status: section.status || 'pending',
+      relevantPaperIds: section.relevantPaperIds || section.relevant_paper_ids || [],
+      recommendedAssetTypes: section.recommendedAssetTypes || section.recommended_asset_types || []
+    }));
   } catch (error) {
     console.error('Error generating outline:', error);
     throw error;
@@ -496,8 +648,10 @@ export const fetchPaper = async (id: string): Promise<Paper> => {
            // External URL (ArXiv, etc.)
            pdfUrl = data.url;
        } else if (data.arxiv_id) {
-           // Construct ArXiv PDF URL
-           pdfUrl = `https://arxiv.org/pdf/${data.arxiv_id}.pdf`;
+           // Use backend proxy to bypass CORS
+           const rootUrl = (apiClient.defaults.baseURL || '').replace(/\/api\/v1\/?$/, '');
+           const apiRoot = (apiClient.defaults.baseURL || 'http://localhost:8000/api/v1');
+           pdfUrl = `${apiRoot}/papers/pdf/proxy/${data.arxiv_id}`;
        }
        
        return {

@@ -1,0 +1,14 @@
+node_modules
+npm-debug.log
+.git
+.gitignore
+.vscode
+backend/.env
+backend/.venv
+backend/__pycache__
+backend/.pytest_cache
+backend/data
+backend/logs
+backend/models
+backend/uploads
+backend/*.db

@@ -1,0 +1,65 @@
+{
+  "timestamp": "2026-04-03T09:33:18.751314",
+  "environment": {
+    "cpu_count": 8,
+    "total_memory_gb": 15.755851745605469
+  },
+  "stage_key": "without_guardrails",
+  "queries": [
+    "machine learning medical diagnosis neural networks",
+    "transformer attention mechanism natural language processing",
+    "deep learning computer vision convolutional neural network",
+    "reinforcement learning reward optimization policy gradient",
+    "federated learning privacy preserving distributed training"
+  ],
+  "stage": {
+    "label": "LangGraph (No Guardrails)",
+    "queries_tested": 5,
+    "error_count": 0,
+    "success_rate_pct": 100.0,
+    "avg_latency_s": 2.755,
+    "min_latency_s": 1.8543,
+    "max_latency_s": 3.0425,
+    "stdev_latency_s": 0.5061,
+    "p95_latency_s": 3.0036,
+    "p99_latency_s": 3.0036,
+    "avg_papers_returned": 5,
+    "quality_metrics": {
+      "rouge_1": 0.0693,
+      "rouge_2": 0.0058,
+      "rouge_l": 0.0522,
+      "bleu_4": 0.0
+    },
+    "all_latencies_s": [
+      1.8543,
+      2.9025,
+      3.0036,
+      2.9722,
+      3.0425
+    ]
+  },
+  "memory": {
+    "baseline_mb": 38.0,
+    "peak_mb": 38.6,
+    "delta_mb": 0.6,
+    "avg_mb": 38.0
+  },
+  "qasper": {
+    "dataset": "allenai/qasper",
+    "examples_used": 8,
+    "with_guardrails": false,
+    "metrics": {
+      "faithfulness": 0.8686,
+      "answer_relevance": 0.6723,
+      "context_precision": 0.6875,
+      "evidence_hit_rate": 0.6875,
+      "ttft_s": 0.9452,
+      "total_latency_s": 6.372,
+      "early_exit_rate": 0.0,
+      "fpr": 0.0,
+      "false_positive_blocks": 0,
+      "valid_academic_questions": 8
+    },
+    "block_events": []
+  }
+}
